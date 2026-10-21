@@ -52,6 +52,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     private var barOn = false
     private var menuWindow: View? = null
     private lateinit var drawer: AppDrawer
+    private lateinit var aperture: ApertureFx
 
     /** Auto-hide: whether the bar has been called up, and the strips that call it. */
     private var revealed = false
@@ -79,7 +80,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     override fun onServiceConnected() {
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
-        drawer = AppDrawer(this, wm, apps, onOpenApp = { launch(it) }, onHoldApp = { pkg, v -> openMenu(pkg, v) })
+        drawer = AppDrawer(this, wm, apps, onOpenApp = { pkg, v -> launch(pkg, v) }, onHoldApp = { pkg, v -> openMenu(pkg, v) })
+        aperture = ApertureFx(this, wm).also { it.attach() }
         // The bar now stays on the home screen too; only system surfaces such as the
         // notification shade push it aside.
         hidePackages = setOf("com.android.systemui")
@@ -100,6 +102,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         removeBar()
         removeTab()
         closePanels()
+        aperture.detach()
         worker.quitSafely()
         super.onDestroy()
     }
@@ -792,14 +795,19 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
 
     // ---- Actions ------------------------------------------------------------------
 
-    override fun onApp(pkg: String, view: View) = launch(pkg)
+    override fun onApp(pkg: String, view: View) = launch(pkg, view)
 
-    private fun launch(pkg: String) {
-        closePanels()
-        if (onScreen.size == 1 && onScreen.first() == pkg) return
+    private fun launch(pkg: String, source: View? = null) {
+        if (onScreen.size == 1 && onScreen.first() == pkg) { closePanels(); return }
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
-        apps.open(pkg)
+        // Launch first, on this frame; the motion runs alongside and never delays the app
+        apps.open(pkg, source)
+        if (source != null && source.isAttachedToWindow && Prefs.aperture(this)) {
+            val loc = IntArray(2).also { source.getLocationOnScreen(it) }
+            aperture.play(loc[0] + source.width / 2f, loc[1] + source.height / 2f)
+        }
+        closePanels()
         if (Prefs.autoHide(this) && revealed) {
             main.removeCallbacks(autoHideNow)
             main.postDelayed(autoHideNow, 600)
@@ -841,51 +849,46 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         onBarTouched()
     }
 
+    /**
+     * Opens [pkg] beside the app on screen. The request goes through [SplitActivity],
+     * because Android only splits the screen for a request from a full-screen app. If
+     * One UI still refuses, Android's split-screen shortcut is tried once.
+     */
     private fun splitWith(pkg: String) {
         closePanels()
-        val before = onScreen.filter { it !in noRecents }
         val label = apps.entry(pkg)?.label ?: pkg
-        if (before.size >= 2) {
-            apps.openAdjacent(pkg)
-            EventLog.add(this, "Split: replaced the other pane with $label")
+        val target = apps.entry(pkg)?.component ?: return
+        val apps2 = onScreen.filter { it !in hidePackages }
+        val current = onScreen.firstOrNull()
+        if (current == null || current in noRecents) {
+            EventLog.add(this, "Split: needs an app on screen to sit beside; opened $label instead")
+            apps.open(pkg)
             return
         }
-        val current = before.firstOrNull() ?: run { apps.open(pkg); return }
-        val currentLabel = apps.entry(current)?.label ?: current
-        val p = Prefs.of(this)
-        if (p.getString(SPLIT_METHOD, "adjacent") == "adjacent") {
-            apps.openAdjacent(pkg)
-            main.postDelayed({
-                bg.post {
-                    scanWindows()
-                    main.post {
-                        if (onScreen.size >= 2) {
-                            EventLog.add(this, "Split: $label beside $currentLabel (direct launch worked)")
-                        } else {
-                            EventLog.add(this, "Split: direct launch ignored, switching to the split-screen shortcut")
-                            p.edit().putString(SPLIT_METHOD, "toggle").apply()
-                            toggleThenLaunch(current)
-                        }
+        val back = if (apps2.size >= 2) null else apps.entry(current)?.component
+        val intent = Intent(this, SplitActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            .putExtra(SplitActivity.EXTRA_TARGET, target)
+            .putExtra(SplitActivity.EXTRA_BACK, back)
+        runCatching { startActivity(intent) }
+            .onFailure { EventLog.add(this, "Split: could not start (${it.javaClass.simpleName})") }
+
+        main.postDelayed({
+            bg.post {
+                scanWindows()
+                val seen = onScreen
+                main.post {
+                    val names = seen.joinToString(" + ") { apps.entry(it)?.label ?: it }
+                    if (seen.size >= 2 && pkg in seen) {
+                        EventLog.add(this, "Split worked: $names")
+                    } else {
+                        EventLog.add(this, "Split refused by One UI (on screen: $names). Trying the split-screen shortcut")
+                        val ok = performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
+                        EventLog.add(this, "Split-screen shortcut ${if (ok) "accepted" else "refused"}")
                     }
                 }
-            }, 900)
-        } else {
-            toggleThenLaunch(pkg)
-        }
-    }
-
-    /** Docks the app on screen into split view, then fills the other side with [pkg]. */
-    private fun toggleThenLaunch(pkg: String) {
-        val ok = performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
-        main.postDelayed({
-            apps.openAdjacent(pkg)
-            main.postDelayed({
-                bg.post {
-                    scanWindows()
-                    EventLog.add(this, "Split shortcut ${if (ok) "accepted" else "refused"}; apps on screen: ${onScreen.size}")
-                }
-            }, 900)
-        }, 650)
+            }
+        }, 1400)
     }
 
     private fun openMenu(pkg: String, anchor: View) {

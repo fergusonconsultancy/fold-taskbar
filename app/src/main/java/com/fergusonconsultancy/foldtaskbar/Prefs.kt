@@ -22,6 +22,7 @@ object Prefs {
     private const val RECENTS = "recents"
     private const val TRAY = "tray"
     private const val AUTO_HIDE = "auto_hide"
+    private const val APERTURE = "aperture"
     private const val COLLAPSED = "collapsed"
 
     val ICON_SIZES = listOf(40, 44, 52)
@@ -61,6 +62,10 @@ object Prefs {
     fun setCollapsed(c: Context, v: Pair<Char, Float>?) = of(c).edit().apply {
         if (v == null) remove(COLLAPSED) else putString(COLLAPSED, "${v.first},${v.second}")
     }.apply()
+
+    /** The Aperture app-switch transition; off means the plain system animation. */
+    fun aperture(c: Context) = of(c).getBoolean(APERTURE, true)
+    fun setAperture(c: Context, v: Boolean) = of(c).edit().putBoolean(APERTURE, v).apply()
 
     fun autoHide(c: Context) = of(c).getBoolean(AUTO_HIDE, false)
     fun setAutoHide(c: Context, v: Boolean) = of(c).edit().putBoolean(AUTO_HIDE, v).apply()

@@ -74,7 +74,7 @@ class AppDrawer(
     private val context: Context,
     private val wm: WindowManager,
     private val apps: Apps,
-    private val onOpenApp: (String) -> Unit,
+    private val onOpenApp: (String, View) -> Unit,
     private val onHoldApp: (String, View) -> Unit,
 ) {
     private var scrim: View? = null
@@ -308,7 +308,7 @@ class AppDrawer(
             h.icon.setImageDrawable(apps.icon(app.pkg))
             h.label.text = app.label
             h.itemView.contentDescription = app.label
-            h.itemView.setOnClickListener { it.tick(); onOpenApp(app.pkg) }
+            h.itemView.setOnClickListener { it.tick(); onOpenApp(app.pkg, h.icon) }
             h.itemView.setOnLongClickListener { it.thud(); onHoldApp(app.pkg, it); true }
         }
     }

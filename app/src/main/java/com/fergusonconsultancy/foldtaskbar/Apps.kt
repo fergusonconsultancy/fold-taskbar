@@ -64,9 +64,17 @@ class Apps(private val context: Context) {
     )?.activityInfo?.packageName
 
     /** Brings the app forward, reusing its existing window if it has one, as a launcher would. */
-    fun open(pkg: String): Boolean {
+    fun open(pkg: String, source: android.view.View? = null): Boolean {
         val e = entry(pkg) ?: return false
-        return runCatching { launcher.startMainActivity(e.component, user, null, null) }
+        // Given the icon, the system grows the app out of it rather than sliding it in
+        val bounds = source?.takeIf { it.isAttachedToWindow }?.let { v ->
+            val loc = IntArray(2).also { v.getLocationOnScreen(it) }
+            Rect(loc[0], loc[1], loc[0] + v.width, loc[1] + v.height)
+        }
+        val opts = source?.takeIf { it.isAttachedToWindow && Prefs.aperture(context) }?.let { v ->
+            ActivityOptions.makeScaleUpAnimation(v, 0, 0, v.width, v.height).toBundle()
+        }
+        return runCatching { launcher.startMainActivity(e.component, user, bounds, opts) }
             .onFailure { EventLog.add(context, "Open ${e.label} failed: ${it.javaClass.simpleName}") }
             .isSuccess
     }

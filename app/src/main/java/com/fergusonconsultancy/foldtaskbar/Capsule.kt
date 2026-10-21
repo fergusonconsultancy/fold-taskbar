@@ -73,7 +73,35 @@ class Capsule(
 
     /** Moves the open-app marks without touching anything else, so nothing redraws. */
     fun setActive(active: Set<String>) {
-        indicators.forEach { (pkg, v) -> v.visibility = if (pkg in active) VISIBLE else INVISIBLE }
+        val lit = indicators.filter { it.value.visibility == VISIBLE && it.value.tag != "off" }.keys
+        val on = indicators.keys.filter { it in active && it !in lit }
+        val off = lit.filter { it !in active }
+        if (!isAttachedToWindow || width == 0) {
+            indicators.forEach { (pkg, v) -> v.animate().cancel(); v.scaleX = 1f; v.tag = null; v.visibility = if (pkg in active) VISIBLE else INVISIBLE }
+            return
+        }
+        fun x(v: View) = IntArray(2).also { v.getLocationOnScreen(it) }[if (vertical) 1 else 0]
+        val goingTo = on.firstOrNull()?.let { indicators[it] }
+        val comingFrom = off.firstOrNull()?.let { indicators[it] }
+        off.forEach { pkg ->
+            val v = indicators[pkg] ?: return@forEach
+            // The light leaves through the side facing the newly opened app...
+            v.pivotX = if (goingTo != null && x(goingTo) > x(v)) v.width.toFloat() else 0f
+            v.tag = "off"
+            v.animate().cancel()
+            v.animate().scaleX(0f).setDuration(180).setInterpolator(Curves.CLOSE)
+                .withEndAction { if (v.tag == "off") { v.visibility = INVISIBLE; v.scaleX = 1f; v.tag = null } }.start()
+        }
+        on.forEach { pkg ->
+            val v = indicators[pkg] ?: return@forEach
+            // ...and arrives through the side facing the app you left
+            v.pivotX = if (comingFrom != null && x(comingFrom) > x(v)) v.width.toFloat() else 0f
+            v.tag = null
+            v.animate().cancel()
+            v.scaleX = 0f
+            v.visibility = VISIBLE
+            v.animate().scaleX(1f).setStartDelay(if (comingFrom != null) 90 else 0).setDuration(280).setInterpolator(Curves.OPEN).start()
+        }
     }
 
     private fun rebuild(slots: List<Slot>) {

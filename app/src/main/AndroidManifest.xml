@@ -28,6 +28,16 @@
             </intent-filter>
         </activity>
 
+        <!-- Invisible stepping stone that makes split screen requests count as full screen -->
+        <activity
+            android:name=".SplitActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:resizeableActivity="true"
+            android:noHistory="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".TaskbarService"
             android:exported="true"

@@ -76,6 +76,9 @@ class MainActivity : Activity() {
         root.addView(choice({ if (Prefs.autoHide(this)) "Auto-hide: on" else "Auto-hide: off (always showing)" }) {
             Prefs.setAutoHide(this, !Prefs.autoHide(this))
         })
+        root.addView(choice({ if (Prefs.aperture(this)) "App switching: Aperture" else "App switching: system animation" }) {
+            Prefs.setAperture(this, !Prefs.aperture(this))
+        })
         root.addView(button("Put the taskbar back at the bottom") {
             Prefs.resetSpots(this); refresh()
         })
@@ -106,11 +109,6 @@ class MainActivity : Activity() {
         }
         root.addView(logText)
         root.addView(button("Clear log") { EventLog.clear(this); refresh() })
-        root.addView(button("Retry the direct split-screen method") {
-            Prefs.of(this).edit().remove("split_method").apply()
-            EventLog.add(this, "Split method reset to direct launch")
-            refresh()
-        })
 
         setContentView(ScrollView(this).apply {
             setBackgroundColor(Color.rgb(14, 20, 17))
@@ -133,11 +131,8 @@ class MainActivity : Activity() {
                     else -> "Taskbar: off. Follow the two steps below."
                 }
             )
-            append("Split screen method: ")
-            append(
-                if (Prefs.of(this@MainActivity).getString("split_method", "adjacent") == "adjacent") "direct launch"
-                else "split-screen shortcut (direct launch was ignored)"
-            )
+            append("App switching: ")
+            append(if (Prefs.aperture(this@MainActivity)) "Aperture" else "system animation")
         }
         choiceButtons.forEach { (b, label) -> b.text = label() }
         logText.text = EventLog.read(this)
