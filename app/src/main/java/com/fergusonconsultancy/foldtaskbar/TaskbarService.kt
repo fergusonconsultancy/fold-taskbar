@@ -11,6 +11,7 @@ import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
@@ -25,25 +26,38 @@ import android.widget.FrameLayout
 /**
  * Runs the taskbar. An accessibility service is the one kind of app Android lets draw
  * over every other app and ask for split screen, so the bar lives here.
+ *
+ * Steadiness rules, learned from the first build on the Fold:
+ * - The bar's windows are created once and kept. Changes update the icons in place.
+ * - Showing is instant; hiding waits until the reason to hide has lasted a moment, so the
+ *   brief gaps during app transitions never blink the bar.
+ * - Reading the window list happens off the main thread, so touches are never queued
+ *   behind it.
  */
 class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences.OnSharedPreferenceChangeListener {
 
     private lateinit var wm: WindowManager
     private lateinit var apps: Apps
     private val main = Handler(Looper.getMainLooper())
+    private val worker = HandlerThread("taskbar-scan").apply { start() }
+    private val bg = Handler(worker.looper)
 
+    private val capsules = mutableListOf<Capsule>()
     private val barWindows = mutableListOf<View>()
-    private var handleWindow: View? = null
+    private var layoutKey = ""
+    private var barShown = false
     private var drawerWindow: View? = null
     private var menuWindow: View? = null
     private var drawerClosedAt = 0L
 
     /** Apps with a window on screen right now, the focused one first. */
-    private var onScreen: List<String> = emptyList()
-    private var keyboardUp = false
-    private var systemInFront = false
+    @Volatile private var onScreen: List<String> = emptyList()
+    @Volatile private var keyboardUp = false
+    @Volatile private var systemInFront = false
     private var hidePackages: Set<String> = emptySet()
-    private var lastSignature = ""
+
+    private var pendingOpen: String? = null
+    private var pendingOpenAt = 0L
 
     // ---- Lifecycle ----------------------------------------------------------------
 
@@ -62,7 +76,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         running = false
         runCatching { Prefs.of(this).unregisterOnSharedPreferenceChangeListener(this) }
         runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
-        clearAll()
+        removeBar()
+        closePanels()
+        worker.quitSafely()
         super.onDestroy()
     }
 
@@ -71,28 +87,37 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         apps.forget()
-        lastSignature = ""
+        layoutKey = ""
         scheduleScan()
     }
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
         override fun onDisplayRemoved(displayId: Int) = Unit
-        override fun onDisplayChanged(displayId: Int) { lastSignature = ""; scheduleScan() }
+        override fun onDisplayChanged(displayId: Int) = scheduleScan()
     }
 
-    override fun onSharedPreferenceChanged(p: SharedPreferences?, key: String?) = scheduleRender()
+    override fun onSharedPreferenceChanged(p: SharedPreferences?, key: String?) {
+        main.removeCallbacks(applyNow)
+        main.post(applyNow)
+    }
 
     // ---- Watching the screen ------------------------------------------------------
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = scheduleScan()
 
-    private val scan = Runnable { scanWindows(); render() }
-    private val renderNow = Runnable { render() }
+    private val scan = Runnable {
+        scanWindows()
+        main.post(applyNow)
+    }
+    private val applyNow = Runnable { apply() }
 
-    private fun scheduleScan() { main.removeCallbacks(scan); main.postDelayed(scan, 60) }
-    private fun scheduleRender() { main.removeCallbacks(renderNow); main.post(renderNow) }
+    private fun scheduleScan() {
+        bg.removeCallbacks(scan)
+        bg.postDelayed(scan, 40)
+    }
 
+    /** Runs on the worker thread. */
     private fun scanWindows() {
         val list = runCatching { windows }.getOrDefault(emptyList())
         val found = mutableListOf<String>()
@@ -110,11 +135,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         }
         keyboardUp = ime
         systemInFront = system
-        onScreen = found.distinct()
-        // Oldest first, so the focused app ends up at the front of the recents
-        onScreen.asReversed()
-            .filter { it !in hidePackages && it != packageName && apps.isLaunchable(it) }
-            .forEach { Prefs.pushRecent(this, it) }
+        // An empty list is a transition in progress, not a real state. Keep the last one.
+        if (found.isNotEmpty()) onScreen = found.distinct()
     }
 
     private fun homePackages(): Set<String> =
@@ -124,8 +146,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
 
     private fun isMainScreen(): Boolean {
         val b = wm.currentWindowMetrics.bounds
-        val d = resources.displayMetrics.density
-        return minOf(b.width(), b.height()) / d >= 600
+        return minOf(b.width(), b.height()) / resources.displayMetrics.density >= 600
     }
 
     private fun shouldShow(): Boolean {
@@ -137,64 +158,114 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
 
     // ---- Drawing the bar ----------------------------------------------------------
 
-    private fun render() {
+    private val hideNow = Runnable { setBarVisible(false) }
+
+    /** Main thread. Cheap when nothing has changed. */
+    private fun apply() {
         if (!::wm.isInitialized) return
-        val show = shouldShow()
-        val tucked = Prefs.tucked(this)
-        if (!show) {
-            clearAll(); lastSignature = ""; return
+        recordRecents()
+        reportOpenTime()
+
+        if (!shouldShow()) {
+            // Keyboard and cover screen hide at once; anything else waits to be sure.
+            val delay = if (keyboardUp || !isMainScreen()) 0L else 220L
+            if (barShown) { main.removeCallbacks(hideNow); main.postDelayed(hideNow, delay) }
+            if (!isMainScreen()) closePanels()
+            return
         }
-        if (tucked) {
-            clearBar(); closePanels(); showHandle(); lastSignature = "tucked"; return
-        }
-        removeHandle()
+        main.removeCallbacks(hideNow)
 
         val shape = Prefs.shape(this)
         val finish = Prefs.finish(this)
         val iconDp = Prefs.iconDp(this)
         val bounds = wm.currentWindowMetrics.bounds
-        val maxSlots = maxSlots(bounds.width(), iconDp, shape)
+        val key = "$shape|$finish|$iconDp|${bounds.width()}x${bounds.height()}|${navInset()}"
+        if (key != layoutKey || barWindows.isEmpty()) {
+            removeBar()
+            buildBar(shape, finish, iconDp, bounds)
+            layoutKey = key
+        }
 
-        val pinned = Prefs.pinned(this).filter { apps.isLaunchable(it) }
-        val recents = Prefs.recents(this)
-            .filter { it !in pinned && it !in hidePackages && it != packageName && apps.isLaunchable(it) }
-            .take(Prefs.recentCount(this))
+        val groups = slotGroups(shape, iconDp, bounds.width())
         val active = onScreen.toSet()
-        fun app(p: String) = Slot.App(p, p in active)
+        capsules.forEachIndexed { i, c -> c.show(groups.getOrElse(i) { emptyList() }, active) }
+        setBarVisible(true)
+    }
 
-        val groups: List<List<Slot>> = when (shape) {
+    private fun recordRecents() {
+        val eligible = { p: String -> p !in hidePackages && p != packageName && p !in Prefs.pinned(this) && apps.isLaunchable(p) }
+        val front = onScreen.firstOrNull() ?: return
+        if (front in hidePackages || front == packageName || !apps.isLaunchable(front)) return
+        Prefs.pushRecent(this, front)
+        if (front !in Prefs.pinned(this)) Prefs.trayAdd(this, front, Prefs.recentCount(this), eligible)
+    }
+
+    private fun reportOpenTime() {
+        val p = pendingOpen ?: return
+        if (onScreen.firstOrNull() == p) {
+            val ms = SystemClock.uptimeMillis() - pendingOpenAt
+            EventLog.add(this, "Opened ${apps.entry(p)?.label ?: p} in ${ms}ms")
+            pendingOpen = null
+        } else if (SystemClock.uptimeMillis() - pendingOpenAt > 4000) {
+            EventLog.add(this, "Tap on ${apps.entry(p)?.label ?: p}: app did not come forward within 4s")
+            pendingOpen = null
+        }
+    }
+
+    private fun slotGroups(shape: Shape, iconDp: Int, screenW: Int): List<List<Slot>> {
+        val maxSlots = maxSlots(screenW, iconDp, shape)
+        val pinned = Prefs.pinned(this).filter { apps.isLaunchable(it) }
+        val tray = Prefs.tray(this)
+            .filter { it !in pinned && it !in hidePackages && apps.isLaunchable(it) }
+            .take(Prefs.recentCount(this))
+        return when (shape) {
             Shape.PAIR -> listOf(
-                listOf(Slot.AllApps) + pinned.take(maxSlots - 1).map(::app),
-                recents.take(maxSlots - 1).map(::app) + Slot.Tuck,
+                listOf(Slot.AllApps) + pinned.take(maxSlots - 1).map { Slot.App(it) },
+                tray.take(maxSlots).map { Slot.App(it) },
             )
             Shape.CAPSULE -> {
-                val p = pinned.take((maxSlots - 2) / 2 + 1)
-                val r = recents.take(maxSlots - 2 - p.size)
+                val p = pinned.take((maxSlots - 1) / 2 + 1)
+                val r = tray.take(maxSlots - 1 - p.size)
                 listOf(
-                    listOf(Slot.AllApps) + p.map(::app) +
+                    listOf(Slot.AllApps) + p.map { Slot.App(it) } +
                         (if (p.isNotEmpty() && r.isNotEmpty()) listOf(Slot.Divider) else emptyList()) +
-                        r.map(::app) + Slot.Tuck
+                        r.map { Slot.App(it) }
                 )
             }
         }
+    }
 
-        val signature = "$shape|$finish|$iconDp|${bounds.width()}x${bounds.height()}|$groups"
-        if (signature == lastSignature && barWindows.isNotEmpty()) return
-        lastSignature = signature
-
-        clearBar()
-        val bottom = navInset() + dp(6)
-        groups.forEachIndexed { i, slots ->
-            val capsule = Capsule(this, apps, finish, iconDp, this).apply { show(slots) }
-            val host = shadowHost(capsule)
+    private fun buildBar(shape: Shape, finish: Finish, iconDp: Int, bounds: Rect) {
+        val count = if (shape == Shape.PAIR) 2 else 1
+        val bottom = navInset() + dp(6) - dp(10)
+        repeat(count) { i ->
+            val capsule = Capsule(this, apps, finish, iconDp, this)
+            val host = shadowHost(capsule).apply { visibility = View.GONE }
             val x = when {
                 shape == Shape.PAIR && i == 0 -> -bounds.width() / 4
                 shape == Shape.PAIR -> bounds.width() / 4
                 else -> 0
             }
-            add(host, params(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, x, bottom - dp(10)))
+            add(host, params(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, x, bottom))
+            capsules += capsule
             barWindows += host
         }
+        barShown = false
+    }
+
+    private fun setBarVisible(show: Boolean) {
+        if (show == barShown) return
+        barShown = show
+        barWindows.forEach { host ->
+            host.animate().cancel()
+            if (show) {
+                host.visibility = View.VISIBLE
+                host.animate().alpha(1f).setDuration(90).start()
+            } else {
+                host.animate().alpha(0f).setDuration(90).withEndAction { if (!barShown) host.visibility = View.GONE }.start()
+            }
+        }
+        if (!show) closePanels()
     }
 
     /** How many icons fit in one capsule without crossing the crease or the screen edge. */
@@ -240,36 +311,21 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
 
     private fun remove(v: View?) { if (v != null) runCatching { wm.removeView(v) } }
 
-    private fun clearBar() { barWindows.forEach(::remove); barWindows.clear() }
-    private fun removeHandle() { remove(handleWindow); handleWindow = null }
-    private fun closePanels() { closeMenu(); closeDrawer() }
-    private fun clearAll() { clearBar(); removeHandle(); closePanels() }
-
-    // ---- Tucked away --------------------------------------------------------------
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun showHandle() {
-        if (handleWindow != null) return
-        val finish = Prefs.finish(this)
-        val tab = View(this).apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(finish.indicator); cornerRadius = dp(3).toFloat()
-            }
-        }
-        val host = FrameLayout(this).apply {
-            addView(tab, FrameLayout.LayoutParams(dp(5), dp(64), Gravity.END or Gravity.CENTER_VERTICAL).apply { marginEnd = dp(3) })
-            contentDescription = "Show taskbar"
-            setOnClickListener { it.tick(); Prefs.setTucked(this@TaskbarService, false) }
-        }
-        add(host, params(Gravity.BOTTOM or Gravity.END, 0, navInset() + dp(96), w = dp(28), h = dp(88)))
-        handleWindow = host
+    private fun removeBar() {
+        barWindows.forEach(::remove); barWindows.clear(); capsules.clear(); barShown = false
     }
+
+    private fun closePanels() { closeMenu(); closeDrawer() }
 
     // ---- Actions ------------------------------------------------------------------
 
-    override fun onApp(pkg: String, view: View) {
+    override fun onApp(pkg: String, view: View) = launch(pkg)
+
+    private fun launch(pkg: String) {
         closePanels()
         if (onScreen.size == 1 && onScreen.first() == pkg) return
+        pendingOpen = pkg
+        pendingOpenAt = SystemClock.uptimeMillis()
         apps.open(pkg)
     }
 
@@ -280,11 +336,6 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         if (SystemClock.uptimeMillis() - drawerClosedAt < 350) return
         closeMenu()
         openDrawer()
-    }
-
-    override fun onTuck() {
-        closePanels()
-        Prefs.setTucked(this, true)
     }
 
     private fun splitWith(pkg: String) {
@@ -302,13 +353,17 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         if (p.getString(SPLIT_METHOD, "adjacent") == "adjacent") {
             apps.openAdjacent(pkg)
             main.postDelayed({
-                scanWindows()
-                if (onScreen.size >= 2) {
-                    EventLog.add(this, "Split: $label beside $currentLabel (direct launch worked)")
-                } else {
-                    EventLog.add(this, "Split: direct launch ignored, switching to the split-screen shortcut")
-                    p.edit().putString(SPLIT_METHOD, "toggle").apply()
-                    toggleThenLaunch(current)
+                bg.post {
+                    scanWindows()
+                    main.post {
+                        if (onScreen.size >= 2) {
+                            EventLog.add(this, "Split: $label beside $currentLabel (direct launch worked)")
+                        } else {
+                            EventLog.add(this, "Split: direct launch ignored, switching to the split-screen shortcut")
+                            p.edit().putString(SPLIT_METHOD, "toggle").apply()
+                            toggleThenLaunch(current)
+                        }
+                    }
                 }
             }, 900)
         } else {
@@ -322,8 +377,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         main.postDelayed({
             apps.openAdjacent(pkg)
             main.postDelayed({
-                scanWindows()
-                EventLog.add(this, "Split shortcut ${if (ok) "accepted" else "refused"}; apps on screen: ${onScreen.size}")
+                bg.post {
+                    scanWindows()
+                    EventLog.add(this, "Split shortcut ${if (ok) "accepted" else "refused"}; apps on screen: ${onScreen.size}")
+                }
             }, 900)
         }, 650)
     }
@@ -337,17 +394,21 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         val rows = buildList<Pair<String, () -> Unit>> {
             add("Open in split screen" to { splitWith(pkg) })
             add("Open as pop-up (experimental)" to { closePanels(); apps.openPopup(pkg, wm.currentWindowMetrics.bounds) })
-            add((if (isPinned) "Unpin from taskbar" else "Pin to taskbar") to { closeMenu(); Prefs.togglePin(this@TaskbarService, pkg) })
+            add((if (isPinned) "Unpin from taskbar" else "Pin to taskbar") to {
+                closeMenu()
+                Prefs.togglePin(this@TaskbarService, pkg)
+                if (!isPinned) Prefs.trayRemove(this@TaskbarService, pkg)
+            })
             if (isPinned && pinned.indexOf(pkg) > 0) add("Move left" to { closeMenu(); Prefs.movePin(this@TaskbarService, pkg, -1) })
             if (isPinned && pinned.indexOf(pkg) < pinned.lastIndex) add("Move right" to { closeMenu(); Prefs.movePin(this@TaskbarService, pkg, 1) })
-            if (!isPinned && pkg in Prefs.recents(this@TaskbarService)) add("Remove from recents" to { closeMenu(); Prefs.forgetRecent(this@TaskbarService, pkg) })
+            if (!isPinned && pkg in Prefs.tray(this@TaskbarService)) add("Remove from recents" to { closeMenu(); Prefs.forgetRecent(this@TaskbarService, pkg) })
         }
         val menu = ActionMenu(this, finish, label, rows)
         val host = outsideCloses(shadowHost(menu)) { closeMenu() }
         host.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
         val loc = IntArray(2).also { anchor.getLocationOnScreen(it) }
         val screen = wm.currentWindowMetrics.bounds
-        val x = (loc[0] + anchor.width / 2 - host.measuredWidth / 2).coerceIn(0, screen.width() - host.measuredWidth)
+        val x = (loc[0] + anchor.width / 2 - host.measuredWidth / 2).coerceIn(0, maxOf(0, screen.width() - host.measuredWidth))
         val y = (loc[1] - host.measuredHeight - dp(4)).coerceAtLeast(0)
         add(host, params(Gravity.TOP or Gravity.START, x, y, watchOutside = true))
         menuWindow = host
@@ -361,7 +422,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         val h = (screen.height() * 0.6f).toInt()
         val drawer = AppDrawer(
             this, apps, Prefs.finish(this), w,
-            onOpen = { closePanels(); apps.open(it) },
+            onOpen = { launch(it) },
             onHold = { pkg, v -> openMenu(pkg, v) },
         )
         val host = outsideCloses(shadowHost(drawer)) { closeDrawer() }

@@ -20,7 +20,7 @@ object Prefs {
     private const val RECENT_COUNT = "recent_count"
     private const val PINNED = "pinned"
     private const val RECENTS = "recents"
-    private const val TUCKED = "tucked"
+    private const val TRAY = "tray"
 
     val ICON_SIZES = listOf(40, 44, 52)
     val RECENT_COUNTS = listOf(3, 4, 5, 6)
@@ -39,10 +39,33 @@ object Prefs {
     fun recentCount(c: Context) = of(c).getInt(RECENT_COUNT, 4)
     fun setRecentCount(c: Context, v: Int) = of(c).edit().putInt(RECENT_COUNT, v).apply()
 
-    fun tucked(c: Context) = of(c).getBoolean(TUCKED, false)
-    fun setTucked(c: Context, v: Boolean) = of(c).edit().putBoolean(TUCKED, v).apply()
-
     fun pinned(c: Context): List<String> = list(c, PINNED)
+
+    /**
+     * The recent apps tray, in display order. An app keeps its place once it is in the
+     * tray, so icons never slide under your finger. A new app takes the slot of the one
+     * used longest ago.
+     */
+    fun tray(c: Context): List<String> = list(c, TRAY)
+
+    /** Returns true when the tray changed. */
+    fun trayAdd(c: Context, pkg: String, capacity: Int, eligible: (String) -> Boolean): Boolean {
+        val recency = recents(c)
+        val now = tray(c).filter(eligible).toMutableList()
+        while (now.size > capacity) now.removeAt(now.indices.maxBy { recency.indexOf(now[it]).let { r -> if (r < 0) Int.MAX_VALUE else r } })
+        if (pkg in now) {
+            if (now == tray(c)) return false
+        } else if (now.size < capacity) {
+            now.add(pkg)
+        } else {
+            val oldest = now.indices.maxBy { recency.indexOf(now[it]).let { r -> if (r < 0) Int.MAX_VALUE else r } }
+            now[oldest] = pkg
+        }
+        save(c, TRAY, now)
+        return true
+    }
+
+    fun trayRemove(c: Context, pkg: String) = save(c, TRAY, tray(c) - pkg)
     fun recents(c: Context): List<String> = list(c, RECENTS)
 
     fun togglePin(c: Context, pkg: String) {
@@ -67,7 +90,10 @@ object Prefs {
         return true
     }
 
-    fun forgetRecent(c: Context, pkg: String) = save(c, RECENTS, recents(c) - pkg)
+    fun forgetRecent(c: Context, pkg: String) {
+        save(c, RECENTS, recents(c) - pkg)
+        trayRemove(c, pkg)
+    }
 
     private fun list(c: Context, key: String) =
         of(c).getString(key, "").orEmpty().split(',').filter { it.isNotBlank() }

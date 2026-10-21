@@ -15,15 +15,13 @@ import android.widget.LinearLayout
 sealed interface Slot {
     object AllApps : Slot
     object Divider : Slot
-    object Tuck : Slot
-    data class App(val pkg: String, val active: Boolean) : Slot
+    data class App(val pkg: String) : Slot
 }
 
 interface CapsuleActions {
     fun onApp(pkg: String, view: View)
     fun onAppHeld(pkg: String, view: View)
     fun onAllApps(view: View)
-    fun onTuck()
 }
 
 /** One capsule of the bar: a row of icons, sized only to what it holds. */
@@ -39,6 +37,8 @@ class Capsule(
     private val gap = context.dp(iconDp * 0.28f)
     private val padX = context.dp(iconDp * 0.32f)
     private val padY = context.dp(8)
+    private val indicators = HashMap<String, View>()
+    private var current: List<Slot> = emptyList()
 
     init {
         orientation = HORIZONTAL
@@ -50,12 +50,26 @@ class Capsule(
         clipToPadding = false
     }
 
-    fun show(slots: List<Slot>) {
+    /** Rebuilds only when the set of icons changes; otherwise leaves the views alone. */
+    fun show(slots: List<Slot>, active: Set<String>) {
+        if (slots != current) {
+            current = slots
+            rebuild(slots)
+        }
+        setActive(active)
+    }
+
+    /** Moves the open-app marks without touching anything else, so nothing redraws. */
+    fun setActive(active: Set<String>) {
+        indicators.forEach { (pkg, v) -> v.visibility = if (pkg in active) VISIBLE else INVISIBLE }
+    }
+
+    private fun rebuild(slots: List<Slot>) {
         removeAllViews()
+        indicators.clear()
         slots.forEachIndexed { i, slot ->
             val v = when (slot) {
                 Slot.AllApps -> glyph(Glyph.GRID) { actions.onAllApps(it) }
-                Slot.Tuck -> glyph(Glyph.CHEVRON, narrow = true) { actions.onTuck() }
                 Slot.Divider -> View(context).apply {
                     setBackgroundColor(finish.ink and 0x00FFFFFF or 0x30000000)
                     layoutParams = LayoutParams(context.dp(1).coerceAtLeast(1), context.dp(iconDp * 0.6f))
@@ -77,12 +91,14 @@ class Capsule(
             setImageDrawable(apps.icon(slot.pkg))
             layoutParams = FrameLayout.LayoutParams(size, size, Gravity.TOP)
         })
-        if (slot.active) frame.addView(View(context).apply {
+        frame.addView(View(context).apply {
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(finish.indicator); cornerRadius = context.dp(2).toFloat()
             }
+            visibility = INVISIBLE
             layoutParams = FrameLayout.LayoutParams(context.dp(iconDp * 0.34f), context.dp(3), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-        })
+        }.also { indicators[slot.pkg] = it })
+        pressable(frame)
         frame.setOnClickListener { it.tick(); actions.onApp(slot.pkg, it) }
         frame.setOnLongClickListener { it.thud(); actions.onAppHeld(slot.pkg, it); true }
         return frame
@@ -92,9 +108,24 @@ class Capsule(
         GlyphView(context, kind, finish.ink).apply {
             val size = context.dp(iconDp)
             layoutParams = LayoutParams(if (narrow) (size * 0.55f).toInt() else size, size)
-            contentDescription = if (kind == Glyph.GRID) "All apps" else "Tuck the taskbar away"
+            contentDescription = "All apps"
             setOnClickListener { it.tick(); onTap(it) }
+            pressable(this)
         }
+
+    /** Icons sink slightly the instant a finger lands, so every touch is visibly received. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun pressable(v: View) {
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN ->
+                    view.animate().scaleX(0.86f).scaleY(0.86f).alpha(0.8f).setDuration(70).start()
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140).start()
+            }
+            false
+        }
+    }
 }
 
 enum class Glyph { GRID, CHEVRON }

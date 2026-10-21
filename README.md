@@ -4,7 +4,7 @@ A taskbar for the Galaxy Z Fold 8 Ultra's main screen that works with any launch
 
 ## What it does
 
-- Pinned apps on the left, recent apps on the right, an all-apps grid and a tuck-away control.
+- Pinned apps on the left, recent apps on the right, and an all-apps grid. Recent apps keep their place in the bar.
 - Tap an app to switch to it. Hold an app to open it in split screen, open it as a pop-up (experimental), pin, unpin or reorder it.
 - Shows only on the main screen. Hides on the cover screen, the home screen, the lock screen, the notification shade and while the keyboard is up.
 - Two shapes (Hinge pair, Capsule), three finishes (Smoked glass, Visconti, Paper), three icon sizes.
@@ -24,7 +24,7 @@ It is the only way an ordinary app can draw over every other app, know which app
 
 ## Limits
 
-- The bar floats over apps. Unlike Samsung's taskbar, it cannot make apps resize above it, so it covers a strip at the bottom. Tuck it away when that gets in the way.
+- The bar floats over apps. Unlike Samsung's taskbar, it cannot make apps resize above it, so it covers a strip at the bottom.
 - Split screen tries a direct launch first, then falls back to Android's split-screen shortcut. The event log on the setup screen records which one One UI accepted.
 - Pop-up windows use a mode Android hides from ordinary apps. One UI may open the app full screen instead.
-- Full-screen video is not detected yet; tuck the bar away for that.
+- Full-screen video is not detected yet, so the bar stays over it.

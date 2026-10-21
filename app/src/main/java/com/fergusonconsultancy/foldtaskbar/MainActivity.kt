@@ -77,15 +77,12 @@ class MainActivity : Activity() {
             val all = Prefs.RECENT_COUNTS
             Prefs.setRecentCount(this, all[(all.indexOf(Prefs.recentCount(this)) + 1) % all.size])
         })
-        root.addView(button("Bring the taskbar back if tucked away") {
-            Prefs.setTucked(this, false); refresh()
-        })
 
         heading(root, "Using it")
         root.addView(note(
             "Tap an app to switch to it. Hold an app to open it in split screen or as a pop-up, or to pin it. " +
                 "Pinned apps sit on the left, recent apps on the right. The grid opens all apps. " +
-                "The chevron tucks the bar away; the gold tab on the right edge brings it back. " +
+                "Recent apps keep their place once they're in the bar; a new one replaces the one used longest ago. " +
                 "The bar only shows on the main screen, and steps aside on your home screen and while you type."
         ))
 
