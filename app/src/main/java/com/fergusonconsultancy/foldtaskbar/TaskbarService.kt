@@ -49,6 +49,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
     private var drawerWindow: View? = null
     private var menuWindow: View? = null
     private var drawerClosedAt = 0L
+    private var drawerHost: View? = null
+    private var drawerKey = ""
+
+    /** Auto-hide: whether the bar has been called up, and the swipe strips that call it. */
+    private var revealed = false
+    private val stripWindows = mutableListOf<View>()
 
     /** Apps with a window on screen right now, the focused one first. */
     @Volatile private var onScreen: List<String> = emptyList()
@@ -68,6 +74,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         Prefs.of(this).registerOnSharedPreferenceChangeListener(this)
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
         running = true
+        apps.onPackagesChanged { warmDrawer(rebuildList = true) }
+        warmDrawer(rebuildList = false)
         EventLog.add(this, "Taskbar started. Home app: ${apps.homePackage() ?: "unknown"}")
         scheduleScan()
     }
@@ -88,6 +96,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         super.onConfigurationChanged(newConfig)
         apps.forget()
         layoutKey = ""
+        drawerKey = ""
+        warmDrawer(rebuildList = false)
         scheduleScan()
     }
 
@@ -171,6 +181,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
             val delay = if (keyboardUp || !isMainScreen()) 0L else 220L
             if (barShown) { main.removeCallbacks(hideNow); main.postDelayed(hideNow, delay) }
             if (!isMainScreen()) closePanels()
+            removeStrips()
+            revealed = false
             return
         }
         main.removeCallbacks(hideNow)
@@ -189,8 +201,70 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         val groups = slotGroups(shape, iconDp, bounds.width())
         val active = onScreen.toSet()
         capsules.forEachIndexed { i, c -> c.show(groups.getOrElse(i) { emptyList() }, active) }
-        setBarVisible(true)
+
+        val panelsOpen = drawerWindow != null || menuWindow != null
+        if (Prefs.autoHide(this) && !revealed && !panelsOpen) {
+            setBarVisible(false)
+            showStrips(shape, bounds)
+        } else {
+            removeStrips()
+            setBarVisible(true)
+        }
     }
+
+    // ---- Auto-hide ----------------------------------------------------------------
+
+    private val autoHideNow = Runnable {
+        if (drawerWindow != null || menuWindow != null) { scheduleAutoHide(); return@Runnable }
+        revealed = false
+        apply()
+    }
+
+    private fun scheduleAutoHide() {
+        main.removeCallbacks(autoHideNow)
+        if (Prefs.autoHide(this)) main.postDelayed(autoHideNow, 3500)
+    }
+
+    private fun reveal() {
+        revealed = true
+        apply()
+        scheduleAutoHide()
+    }
+
+    /** Any touch on the bar keeps it up for a few more seconds. */
+    private fun onBarTouched() { if (Prefs.autoHide(this) && revealed) scheduleAutoHide() }
+
+    /**
+     * Invisible strips where the bar sits. Swipe up (or tap) on one to bring the bar
+     * back. They cover only the bar's own footprint, so the rest of the app stays touchable.
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showStrips(shape: Shape, bounds: Rect) {
+        if (stripWindows.isNotEmpty()) return
+        val h = dp(22)
+        val y = navInset()
+        val specs = if (shape == Shape.PAIR)
+            listOf(-bounds.width() / 4 to bounds.width() / 2 - dp(80), bounds.width() / 4 to bounds.width() / 2 - dp(80))
+        else listOf(0 to (bounds.width() * 0.6f).toInt())
+        specs.forEach { (x, w) ->
+            val strip = View(this).apply {
+                contentDescription = "Show taskbar"
+                var downY = 0f
+                setOnTouchListener { _, e ->
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> downY = e.rawY
+                        MotionEvent.ACTION_MOVE -> if (downY - e.rawY > dp(6)) { tick(); reveal() }
+                        MotionEvent.ACTION_UP -> if (!revealed) { tick(); reveal() }
+                    }
+                    true
+                }
+            }
+            add(strip, params(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, x, y, w = w, h = h))
+            stripWindows += strip
+        }
+    }
+
+    private fun removeStrips() { stripWindows.forEach(::remove); stripWindows.clear() }
 
     private fun recordRecents() {
         val eligible = { p: String -> p !in hidePackages && p != packageName && p !in Prefs.pinned(this) && apps.isLaunchable(p) }
@@ -240,7 +314,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         val bottom = navInset() + dp(6) - dp(10)
         repeat(count) { i ->
             val capsule = Capsule(this, apps, finish, iconDp, this)
-            val host = shadowHost(capsule).apply { visibility = View.GONE }
+            val host = shadowHost(capsule, onTouch = ::onBarTouched).apply { visibility = View.GONE }
             val x = when {
                 shape == Shape.PAIR && i == 0 -> -bounds.width() / 4
                 shape == Shape.PAIR -> bounds.width() / 4
@@ -275,7 +349,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         return ((room - dp(iconDp * 0.64f)) / per).coerceAtLeast(3)
     }
 
-    private fun shadowHost(child: View) = FrameLayout(this).apply {
+    private fun shadowHost(child: View, onTouch: (() -> Unit)? = null): FrameLayout = object : FrameLayout(this) {
+        override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN) onTouch?.invoke()
+            return super.dispatchTouchEvent(ev)
+        }
+    }.apply {
         clipChildren = false
         clipToPadding = false
         val p = dp(10)
@@ -312,6 +391,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
     private fun remove(v: View?) { if (v != null) runCatching { wm.removeView(v) } }
 
     private fun removeBar() {
+        removeStrips()
         barWindows.forEach(::remove); barWindows.clear(); capsules.clear(); barShown = false
     }
 
@@ -327,9 +407,27 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
         apps.open(pkg)
+        if (Prefs.autoHide(this) && revealed) {
+            main.removeCallbacks(autoHideNow)
+            main.postDelayed(autoHideNow, 600)
+        }
     }
 
     override fun onAppHeld(pkg: String, view: View) = openMenu(pkg, view)
+
+    override fun onAllAppsHeld(view: View) {
+        closePanels()
+        val auto = Prefs.autoHide(this)
+        showMenu("Taskbar", listOf(
+            (if (auto) "Keep the taskbar showing" else "Auto-hide the taskbar") to {
+                closeMenu(); Prefs.setAutoHide(this, !auto); revealed = false
+            },
+            "Taskbar settings" to {
+                closeMenu()
+                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            },
+        ), view)
+    }
 
     override fun onAllApps(view: View) {
         if (drawerWindow != null) { closeDrawer(); return }
@@ -403,7 +501,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
             if (isPinned && pinned.indexOf(pkg) < pinned.lastIndex) add("Move right" to { closeMenu(); Prefs.movePin(this@TaskbarService, pkg, 1) })
             if (!isPinned && pkg in Prefs.tray(this@TaskbarService)) add("Remove from recents" to { closeMenu(); Prefs.forgetRecent(this@TaskbarService, pkg) })
         }
-        val menu = ActionMenu(this, finish, label, rows)
+        showMenu(label, rows, anchor)
+    }
+
+    private fun showMenu(title: String, rows: List<Pair<String, () -> Unit>>, anchor: View) {
+        closeMenu()
+        val menu = ActionMenu(this, Prefs.finish(this), title, rows)
         val host = outsideCloses(shadowHost(menu)) { closeMenu() }
         host.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
         val loc = IntArray(2).also { anchor.getLocationOnScreen(it) }
@@ -416,16 +519,38 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
 
     private fun closeMenu() { remove(menuWindow); menuWindow = null }
 
-    private fun openDrawer() {
-        val screen: Rect = wm.currentWindowMetrics.bounds
-        val w = minOf((screen.width() * 0.8f).toInt(), dp(760))
-        val h = (screen.height() * 0.6f).toInt()
+    /** Loads apps and icons in the background, then builds the grid ready for the first tap. */
+    private fun warmDrawer(rebuildList: Boolean) {
+        bg.post {
+            if (rebuildList) apps.forget()
+            apps.preload()
+            main.post { drawerKey = ""; drawerHostFor(drawerWidth()) }
+        }
+    }
+
+    private fun drawerWidth(): Int {
+        val screen = wm.currentWindowMetrics.bounds
+        return minOf((screen.width() * 0.8f).toInt(), dp(760))
+    }
+
+    private fun drawerHostFor(w: Int): View {
+        val key = "${Prefs.finish(this)}|$w"
+        drawerHost?.takeIf { key == drawerKey }?.let { return it }
         val drawer = AppDrawer(
             this, apps, Prefs.finish(this), w,
             onOpen = { launch(it) },
             onHold = { pkg, v -> openMenu(pkg, v) },
         )
-        val host = outsideCloses(shadowHost(drawer)) { closeDrawer() }
+        drawerKey = key
+        return outsideCloses(shadowHost(drawer)) { closeDrawer() }.also { drawerHost = it }
+    }
+
+    private fun openDrawer() {
+        val screen: Rect = wm.currentWindowMetrics.bounds
+        val w = drawerWidth()
+        val h = (screen.height() * 0.6f).toInt()
+        val host = drawerHostFor(w)
+        (host.parent as? android.view.ViewGroup)?.removeView(host)
         val bottom = navInset() + dp(Prefs.iconDp(this) + 16 + 6 + 12)
         add(host, params(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, bottom, w = w + dp(20), h = h, watchOutside = true))
         drawerWindow = host

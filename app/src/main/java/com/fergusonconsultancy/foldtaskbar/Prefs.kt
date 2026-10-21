@@ -21,6 +21,7 @@ object Prefs {
     private const val PINNED = "pinned"
     private const val RECENTS = "recents"
     private const val TRAY = "tray"
+    private const val AUTO_HIDE = "auto_hide"
 
     val ICON_SIZES = listOf(40, 44, 52)
     val RECENT_COUNTS = listOf(3, 4, 5, 6)
@@ -35,6 +36,9 @@ object Prefs {
 
     fun iconDp(c: Context) = of(c).getInt(ICON_DP, 44)
     fun setIconDp(c: Context, v: Int) = of(c).edit().putInt(ICON_DP, v).apply()
+
+    fun autoHide(c: Context) = of(c).getBoolean(AUTO_HIDE, false)
+    fun setAutoHide(c: Context, v: Boolean) = of(c).edit().putBoolean(AUTO_HIDE, v).apply()
 
     fun recentCount(c: Context) = of(c).getInt(RECENT_COUNT, 4)
     fun setRecentCount(c: Context, v: Int) = of(c).edit().putInt(RECENT_COUNT, v).apply()

@@ -19,10 +19,21 @@ class Apps(private val context: Context) {
 
     private val launcher = context.getSystemService(LauncherApps::class.java)
     private val user = Process.myUserHandle()
-    private val icons = HashMap<String, Drawable>()
-    private val entries = HashMap<String, AppEntry>()
+    private val icons = java.util.concurrent.ConcurrentHashMap<String, Drawable>()
+    private val entries = java.util.concurrent.ConcurrentHashMap<String, AppEntry>()
+    @Volatile private var allCache: List<AppEntry>? = null
 
-    fun all(): List<AppEntry> =
+    /** The full app list, from memory once [preload] has run. */
+    fun all(): List<AppEntry> = allCache ?: load()
+
+    /** Loads every app and icon ahead of time, off the main thread, so the grid opens instantly. */
+    fun preload() {
+        val list = load()
+        list.forEach { icon(it.pkg) }
+        allCache = list
+    }
+
+    private fun load(): List<AppEntry> =
         launcher.getActivityList(null, user)
             .distinctBy { it.applicationInfo.packageName }
             .map { remember(it) }
@@ -34,7 +45,17 @@ class Apps(private val context: Context) {
     fun icon(pkg: String): Drawable? = icons[pkg] ?: launcher.getActivityList(pkg, user).firstOrNull()
         ?.getBadgedIcon(0)?.also { icons[pkg] = it }
 
-    fun forget() { icons.clear(); entries.clear() }
+    fun forget() { icons.clear(); entries.clear(); allCache = null }
+
+    fun onPackagesChanged(listener: () -> Unit) {
+        launcher.registerCallback(object : LauncherApps.Callback() {
+            override fun onPackageRemoved(packageName: String, user: android.os.UserHandle) = listener()
+            override fun onPackageAdded(packageName: String, user: android.os.UserHandle) = listener()
+            override fun onPackageChanged(packageName: String, user: android.os.UserHandle) = listener()
+            override fun onPackagesAvailable(packageNames: Array<out String>, user: android.os.UserHandle, replacing: Boolean) = listener()
+            override fun onPackagesUnavailable(packageNames: Array<out String>, user: android.os.UserHandle, replacing: Boolean) = listener()
+        })
+    }
 
     fun isLaunchable(pkg: String) = entry(pkg) != null
 

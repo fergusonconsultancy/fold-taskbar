@@ -8,6 +8,7 @@ A taskbar for the Galaxy Z Fold 8 Ultra's main screen that works with any launch
 - Tap an app to switch to it. Hold an app to open it in split screen, open it as a pop-up (experimental), pin, unpin or reorder it.
 - Shows only on the main screen. Hides on the cover screen, the home screen, the lock screen, the notification shade and while the keyboard is up.
 - Two shapes (Hinge pair, Capsule), three finishes (Smoked glass, Visconti, Paper), three icon sizes.
+- Always showing by default, or auto-hide: swipe up where the bar sits to call it back. Hold the grid button to switch.
 
 ## Get the APK
 

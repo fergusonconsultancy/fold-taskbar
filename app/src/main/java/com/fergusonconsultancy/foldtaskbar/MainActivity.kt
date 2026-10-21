@@ -73,6 +73,9 @@ class MainActivity : Activity() {
             val all = Prefs.ICON_SIZES
             Prefs.setIconDp(this, all[(all.indexOf(Prefs.iconDp(this)) + 1) % all.size])
         })
+        root.addView(choice({ if (Prefs.autoHide(this)) "Auto-hide: on" else "Auto-hide: off (always showing)" }) {
+            Prefs.setAutoHide(this, !Prefs.autoHide(this))
+        })
         root.addView(choice({ "Recent apps shown: ${Prefs.recentCount(this)}" }) {
             val all = Prefs.RECENT_COUNTS
             Prefs.setRecentCount(this, all[(all.indexOf(Prefs.recentCount(this)) + 1) % all.size])
@@ -82,6 +85,8 @@ class MainActivity : Activity() {
         root.addView(note(
             "Tap an app to switch to it. Hold an app to open it in split screen or as a pop-up, or to pin it. " +
                 "Pinned apps sit on the left, recent apps on the right. The grid opens all apps. " +
+                "With auto-hide on, swipe up from just above the bottom edge, where the bar sits, to bring it back; " +
+                "it slips away again a few seconds after you stop using it. Hold the grid button to switch auto-hide on or off. " +
                 "Recent apps keep their place once they're in the bar; a new one replaces the one used longest ago. " +
                 "The bar only shows on the main screen, and steps aside on your home screen and while you type."
         ))

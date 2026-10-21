@@ -22,6 +22,7 @@ interface CapsuleActions {
     fun onApp(pkg: String, view: View)
     fun onAppHeld(pkg: String, view: View)
     fun onAllApps(view: View)
+    fun onAllAppsHeld(view: View)
 }
 
 /** One capsule of the bar: a row of icons, sized only to what it holds. */
@@ -69,7 +70,9 @@ class Capsule(
         indicators.clear()
         slots.forEachIndexed { i, slot ->
             val v = when (slot) {
-                Slot.AllApps -> glyph(Glyph.GRID) { actions.onAllApps(it) }
+                Slot.AllApps -> glyph(Glyph.GRID) { actions.onAllApps(it) }.apply {
+                    setOnLongClickListener { it.thud(); actions.onAllAppsHeld(it); true }
+                }
                 Slot.Divider -> View(context).apply {
                     setBackgroundColor(finish.ink and 0x00FFFFFF or 0x30000000)
                     layoutParams = LayoutParams(context.dp(1).coerceAtLeast(1), context.dp(iconDp * 0.6f))
