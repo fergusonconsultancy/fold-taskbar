@@ -49,4 +49,6 @@ android {
 dependencies {
     // Reaches the hidden "launch as a pop-up window" option for the experimental pop-up action
     implementation("org.lsposed.hiddenapibypass:hiddenapibypass:4.3")
+    // The all-apps grid draws only the icons on screen
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }

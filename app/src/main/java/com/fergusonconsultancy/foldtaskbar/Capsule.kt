@@ -121,10 +121,17 @@ class Capsule(
     private fun pressable(v: View) {
         v.setOnTouchListener { view, e ->
             when (e.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN ->
+                android.view.MotionEvent.ACTION_DOWN -> {
                     view.animate().scaleX(0.86f).scaleY(0.86f).alpha(0.8f).setDuration(70).start()
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                    // The grid button starts to part under the finger, before the tap even completes
+                    if (view is GlyphView && !view.isParted) view.animateOpen(0.3f, 90, Curves.OPEN)
+                }
+                android.view.MotionEvent.ACTION_UP ->
                     view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140).start()
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140).start()
+                    if (view is GlyphView && !view.isParted) view.animateOpen(0f, 140, Curves.CLOSE)
+                }
             }
             false
         }
@@ -142,6 +149,21 @@ class GlyphView(context: Context, private val kind: Glyph, ink: Int) : View(cont
     }
     private val r = RectF()
     private val path = Path()
+    private var openness = 0f
+    private var anim: android.animation.ValueAnimator? = null
+
+    /** 0 is closed, 1 is fully parted. The squares part as the grid they stand for opens. */
+    fun animateOpen(target: Float, ms: Long, curve: android.animation.TimeInterpolator) {
+        anim?.cancel()
+        anim = android.animation.ValueAnimator.ofFloat(openness, target).apply {
+            duration = ms
+            interpolator = curve
+            addUpdateListener { openness = it.animatedValue as Float; invalidate() }
+            start()
+        }
+    }
+
+    val isParted get() = openness > 0.5f
 
     override fun onDraw(canvas: Canvas) {
         val s = minOf(width, height).toFloat()
@@ -149,8 +171,8 @@ class GlyphView(context: Context, private val kind: Glyph, ink: Int) : View(cont
         val cy = height / 2f
         when (kind) {
             Glyph.GRID -> {
-                val cell = s * 0.2f
-                val g = s * 0.08f
+                val cell = s * (0.2f - 0.03f * openness)
+                val g = s * (0.08f + 0.1f * openness)
                 val start = cx - cell - g / 2
                 val top = cy - cell - g / 2
                 for (row in 0..1) for (col in 0..1) {

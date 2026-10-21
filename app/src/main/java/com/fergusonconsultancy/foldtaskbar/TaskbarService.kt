@@ -46,11 +46,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
     private val barWindows = mutableListOf<View>()
     private var layoutKey = ""
     private var barShown = false
-    private var drawerWindow: View? = null
     private var menuWindow: View? = null
-    private var drawerClosedAt = 0L
-    private var drawerHost: View? = null
-    private var drawerKey = ""
+    private lateinit var drawer: AppDrawer
 
     /** Auto-hide: whether the bar has been called up, and the swipe strips that call it. */
     private var revealed = false
@@ -70,12 +67,13 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
     override fun onServiceConnected() {
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
+        drawer = AppDrawer(this, wm, apps, onOpenApp = { launch(it) }, onHoldApp = { pkg, v -> openMenu(pkg, v) })
         hidePackages = homePackages() + "com.android.systemui"
         Prefs.of(this).registerOnSharedPreferenceChangeListener(this)
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
         running = true
-        apps.onPackagesChanged { warmDrawer(rebuildList = true) }
-        warmDrawer(rebuildList = false)
+        apps.onPackagesChanged { warmApps(rebuildList = true) }
+        warmApps(rebuildList = false)
         EventLog.add(this, "Taskbar started. Home app: ${apps.homePackage() ?: "unknown"}")
         scheduleScan()
     }
@@ -96,8 +94,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         super.onConfigurationChanged(newConfig)
         apps.forget()
         layoutKey = ""
-        drawerKey = ""
-        warmDrawer(rebuildList = false)
+        warmApps(rebuildList = false)
         scheduleScan()
     }
 
@@ -202,7 +199,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
         val active = onScreen.toSet()
         capsules.forEachIndexed { i, c -> c.show(groups.getOrElse(i) { emptyList() }, active) }
 
-        val panelsOpen = drawerWindow != null || menuWindow != null
+        val panelsOpen = drawer.isOpen || menuWindow != null
         if (Prefs.autoHide(this) && !revealed && !panelsOpen) {
             setBarVisible(false)
             showStrips(shape, bounds)
@@ -215,7 +212,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
     // ---- Auto-hide ----------------------------------------------------------------
 
     private val autoHideNow = Runnable {
-        if (drawerWindow != null || menuWindow != null) { scheduleAutoHide(); return@Runnable }
+        if (drawer.isOpen || menuWindow != null) { scheduleAutoHide(); return@Runnable }
         revealed = false
         apply()
     }
@@ -325,6 +322,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
             barWindows += host
         }
         barShown = false
+        attachDrawer(bounds)
     }
 
     private fun setBarVisible(show: Boolean) {
@@ -392,10 +390,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
 
     private fun removeBar() {
         removeStrips()
+        if (::drawer.isInitialized) drawer.detach()
         barWindows.forEach(::remove); barWindows.clear(); capsules.clear(); barShown = false
     }
 
-    private fun closePanels() { closeMenu(); closeDrawer() }
+    private fun closePanels() { closeMenu(); if (::drawer.isInitialized) drawer.close() }
 
     // ---- Actions ------------------------------------------------------------------
 
@@ -417,6 +416,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
 
     override fun onAllAppsHeld(view: View) {
         closePanels()
+        (view as? GlyphView)?.animateOpen(0f, Curves.CLOSE_MS, Curves.CLOSE)
         val auto = Prefs.autoHide(this)
         showMenu("Taskbar", listOf(
             (if (auto) "Keep the taskbar showing" else "Auto-hide the taskbar") to {
@@ -430,10 +430,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
     }
 
     override fun onAllApps(view: View) {
-        if (drawerWindow != null) { closeDrawer(); return }
-        if (SystemClock.uptimeMillis() - drawerClosedAt < 350) return
         closeMenu()
-        openDrawer()
+        if (drawer.isOpen) drawer.close() else drawer.open(view as? GlyphView)
+        onBarTouched()
     }
 
     private fun splitWith(pkg: String) {
@@ -519,54 +518,28 @@ class TaskbarService : AccessibilityService(), CapsuleActions, SharedPreferences
 
     private fun closeMenu() { remove(menuWindow); menuWindow = null }
 
-    /** Loads apps and icons in the background, then builds the grid ready for the first tap. */
-    private fun warmDrawer(rebuildList: Boolean) {
+    /** Loads apps and icons in the background so the grid is complete before the first tap. */
+    private fun warmApps(rebuildList: Boolean) {
         bg.post {
             if (rebuildList) apps.forget()
             apps.preload()
-            main.post { drawerKey = ""; drawerHostFor(drawerWidth()) }
+            main.post { drawer.refreshApps() }
         }
     }
 
-    private fun drawerWidth(): Int {
-        val screen = wm.currentWindowMetrics.bounds
-        return minOf((screen.width() * 0.8f).toInt(), dp(760))
-    }
-
-    private fun drawerHostFor(w: Int): View {
-        val key = "${Prefs.finish(this)}|$w"
-        drawerHost?.takeIf { key == drawerKey }?.let { return it }
-        val drawer = AppDrawer(
-            this, apps, Prefs.finish(this), w,
-            onOpen = { launch(it) },
-            onHold = { pkg, v -> openMenu(pkg, v) },
-        )
-        drawerKey = key
-        return outsideCloses(shadowHost(drawer)) { closeDrawer() }.also { drawerHost = it }
-    }
-
-    private fun openDrawer() {
-        val screen: Rect = wm.currentWindowMetrics.bounds
-        val w = drawerWidth()
-        val h = (screen.height() * 0.6f).toInt()
-        val host = drawerHostFor(w)
-        (host.parent as? android.view.ViewGroup)?.removeView(host)
+    /** Attaches the grid's windows alongside the bar, so opening it is only an animation. */
+    private fun attachDrawer(bounds: Rect) {
+        val w = minOf((bounds.width() * 0.8f).toInt(), dp(760))
+        val h = (bounds.height() * 0.6f).toInt()
         val bottom = navInset() + dp(Prefs.iconDp(this) + 16 + 6 + 12)
-        add(host, params(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, bottom, w = w + dp(20), h = h, watchOutside = true))
-        drawerWindow = host
-    }
-
-    private fun closeDrawer() {
-        if (drawerWindow != null) drawerClosedAt = SystemClock.uptimeMillis()
-        remove(drawerWindow); drawerWindow = null
+        drawer.attach(Prefs.finish(this), w, h, bottom)
     }
 
     @SuppressLint("ClickableViewAccessibility")
     private fun outsideCloses(v: View, close: () -> Unit): View = v.apply {
         setOnTouchListener { _, e ->
             if (e.action == MotionEvent.ACTION_OUTSIDE) {
-                // A tap on the open menu also counts as outside the drawer; leave the drawer open then
-                if (menuWindow == null || v === menuWindow) close()
+                close()
             }
             false
         }
