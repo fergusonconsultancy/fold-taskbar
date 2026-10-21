@@ -51,6 +51,17 @@ class Capsule(
         clipToPadding = false
     }
 
+    /** Docked against a side edge, the capsule stands upright. */
+    var vertical = false
+        set(v) {
+            if (field == v) return
+            field = v
+            orientation = if (v) VERTICAL else HORIZONTAL
+            gravity = if (v) Gravity.CENTER_HORIZONTAL else Gravity.CENTER_VERTICAL
+            if (v) setPadding(padY, padX, padY, padX) else setPadding(padX, padY, padX, padY)
+            rebuild(current)
+        }
+
     /** Rebuilds only when the set of icons changes; otherwise leaves the views alone. */
     fun show(slots: List<Slot>, active: Set<String>) {
         if (slots != current) {
@@ -75,11 +86,13 @@ class Capsule(
                 }
                 Slot.Divider -> View(context).apply {
                     setBackgroundColor(finish.ink and 0x00FFFFFF or 0x30000000)
-                    layoutParams = LayoutParams(context.dp(1).coerceAtLeast(1), context.dp(iconDp * 0.6f))
+                    val thin = context.dp(1).coerceAtLeast(1)
+                    val long = context.dp(iconDp * 0.6f)
+                    layoutParams = if (vertical) LayoutParams(long, thin) else LayoutParams(thin, long)
                 }
                 is Slot.App -> appIcon(slot)
             }
-            if (i > 0) (v.layoutParams as LayoutParams).marginStart = gap
+            if (i > 0) (v.layoutParams as LayoutParams).apply { if (vertical) topMargin = gap else marginStart = gap }
             addView(v)
         }
     }

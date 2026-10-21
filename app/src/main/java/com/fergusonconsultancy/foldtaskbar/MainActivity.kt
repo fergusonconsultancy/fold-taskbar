@@ -76,6 +76,9 @@ class MainActivity : Activity() {
         root.addView(choice({ if (Prefs.autoHide(this)) "Auto-hide: on" else "Auto-hide: off (always showing)" }) {
             Prefs.setAutoHide(this, !Prefs.autoHide(this))
         })
+        root.addView(button("Put the taskbar back at the bottom") {
+            Prefs.resetSpots(this); refresh()
+        })
         root.addView(choice({ "Recent apps shown: ${Prefs.recentCount(this)}" }) {
             val all = Prefs.RECENT_COUNTS
             Prefs.setRecentCount(this, all[(all.indexOf(Prefs.recentCount(this)) + 1) % all.size])
@@ -88,7 +91,7 @@ class MainActivity : Activity() {
                 "With auto-hide on, swipe up from just above the bottom edge, where the bar sits, to bring it back; " +
                 "it slips away again a few seconds after you stop using it. Hold the grid button to switch auto-hide on or off. " +
                 "Recent apps keep their place once they're in the bar; a new one replaces the one used longest ago. " +
-                "The bar only shows on the main screen, and steps aside on your home screen and while you type."
+                "Hold the bar and slide to carry it anywhere. Let go near an edge and it docks there, standing upright on the sides; near the crease it centres on it. Throw it mostly off the screen, or hold the grid button and choose Collapse to a tab, and it folds into a tab on that edge. Tap the tab to bring the bar back, or slide the tab along its edge. The bar shows on the main screen everywhere, including your home screen, and only moves aside for the keyboard if the keyboard would cover it."
         ))
 
         heading(root, "Event log")

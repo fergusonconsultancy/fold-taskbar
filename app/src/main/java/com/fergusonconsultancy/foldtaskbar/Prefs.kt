@@ -22,6 +22,7 @@ object Prefs {
     private const val RECENTS = "recents"
     private const val TRAY = "tray"
     private const val AUTO_HIDE = "auto_hide"
+    private const val COLLAPSED = "collapsed"
 
     val ICON_SIZES = listOf(40, 44, 52)
     val RECENT_COUNTS = listOf(3, 4, 5, 6)
@@ -36,6 +37,30 @@ object Prefs {
 
     fun iconDp(c: Context) = of(c).getInt(ICON_DP, 44)
     fun setIconDp(c: Context, v: Int) = of(c).edit().putInt(ICON_DP, v).apply()
+
+    /** Where a capsule sits: its centre as fractions of the screen, and whether it stands upright. */
+    data class Spot(val fx: Float, val fy: Float, val vertical: Boolean)
+
+    fun spot(c: Context, shape: Shape, index: Int): Spot? = of(c).getString("spot_${shape}_$index", null)
+        ?.split(',')?.takeIf { it.size == 3 }
+        ?.let { runCatching { Spot(it[0].toFloat(), it[1].toFloat(), it[2] == "v") }.getOrNull() }
+
+    fun setSpot(c: Context, shape: Shape, index: Int, s: Spot) =
+        of(c).edit().putString("spot_${shape}_$index", "${s.fx},${s.fy},${if (s.vertical) "v" else "h"}").apply()
+
+    fun resetSpots(c: Context) = of(c).edit().apply {
+        of(c).all.keys.filter { it.startsWith("spot_") }.forEach { remove(it) }
+        remove(COLLAPSED)
+    }.apply()
+
+    /** Collapsed to a tab: which edge (L, T, R, B) and how far along it, 0 to 1. Null when expanded. */
+    fun collapsed(c: Context): Pair<Char, Float>? = of(c).getString(COLLAPSED, null)
+        ?.split(',')?.takeIf { it.size == 2 }
+        ?.let { runCatching { it[0][0] to it[1].toFloat() }.getOrNull() }
+
+    fun setCollapsed(c: Context, v: Pair<Char, Float>?) = of(c).edit().apply {
+        if (v == null) remove(COLLAPSED) else putString(COLLAPSED, "${v.first},${v.second}")
+    }.apply()
 
     fun autoHide(c: Context) = of(c).getBoolean(AUTO_HIDE, false)
     fun setAutoHide(c: Context, v: Boolean) = of(c).edit().putBoolean(AUTO_HIDE, v).apply()

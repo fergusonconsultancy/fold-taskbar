@@ -90,8 +90,9 @@ class AppDrawer(
         private set
 
     /** Builds the windows for this size and finish. Cheap to call: does nothing if unchanged. */
-    fun attach(finish: Finish, widthPx: Int, heightPx: Int, bottomPx: Int) {
-        val k = "$finish|$widthPx|$heightPx|$bottomPx"
+    /** [fromTop] places the grid below a bar near the top; otherwise above a bar near the bottom. */
+    fun attach(finish: Finish, widthPx: Int, heightPx: Int, offsetPx: Int, fromTop: Boolean) {
+        val k = "$finish|$widthPx|$heightPx|$offsetPx|$fromTop"
         if (k == key && panelHost != null) return
         detach()
         key = k
@@ -140,7 +141,7 @@ class AppDrawer(
             visibility = View.INVISIBLE
         }
         wm.addView(panelHost, params(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, bottomPx - context.dp(10)))
+            (if (fromTop) Gravity.TOP else Gravity.BOTTOM) or Gravity.CENTER_HORIZONTAL, offsetPx - context.dp(10)))
         adapter?.submit(apps.all())
     }
 
