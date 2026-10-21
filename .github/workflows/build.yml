@@ -1,0 +1,35 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set +e
+          gradle assembleDebug --no-daemon 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          # Surface compiler and Gradle errors as annotations, readable without the full log
+          grep -E "^e: |What went wrong|^> [^T]|Could not|rror:" build.log | grep -v "^> Task" | head -10 | while IFS= read -r line; do echo "::error::${line}"; done
+          exit $status
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FoldTaskbar-apk
+          path: app/build/outputs/apk/debug/*.apk

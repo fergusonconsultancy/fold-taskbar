@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Fold Taskbar</string>
+    <string name="service_description">Shows a taskbar along the bottom of the main screen. It watches which app is open and whether the keyboard is showing, so it can show your recent apps and step aside when you type. It does not read anything inside your apps.</string>
+</resources>

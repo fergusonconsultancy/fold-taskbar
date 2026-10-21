@@ -1,0 +1,137 @@
+package com.fergusonconsultancy.foldtaskbar
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.view.Gravity
+import android.view.View
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+
+sealed interface Slot {
+    object AllApps : Slot
+    object Divider : Slot
+    object Tuck : Slot
+    data class App(val pkg: String, val active: Boolean) : Slot
+}
+
+interface CapsuleActions {
+    fun onApp(pkg: String, view: View)
+    fun onAppHeld(pkg: String, view: View)
+    fun onAllApps(view: View)
+    fun onTuck()
+}
+
+/** One capsule of the bar: a row of icons, sized only to what it holds. */
+@SuppressLint("ViewConstructor")
+class Capsule(
+    context: Context,
+    private val apps: Apps,
+    private val finish: Finish,
+    private val iconDp: Int,
+    private val actions: CapsuleActions,
+) : LinearLayout(context) {
+
+    private val gap = context.dp(iconDp * 0.28f)
+    private val padX = context.dp(iconDp * 0.32f)
+    private val padY = context.dp(8)
+
+    init {
+        orientation = HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        background = surface(context, finish, 999f)
+        setPadding(padX, padY, padX, padY)
+        // Room for the shadow that lifts the capsule off the app beneath
+        elevation = context.dp(6).toFloat()
+        clipToPadding = false
+    }
+
+    fun show(slots: List<Slot>) {
+        removeAllViews()
+        slots.forEachIndexed { i, slot ->
+            val v = when (slot) {
+                Slot.AllApps -> glyph(Glyph.GRID) { actions.onAllApps(it) }
+                Slot.Tuck -> glyph(Glyph.CHEVRON, narrow = true) { actions.onTuck() }
+                Slot.Divider -> View(context).apply {
+                    setBackgroundColor(finish.ink and 0x00FFFFFF or 0x30000000)
+                    layoutParams = LayoutParams(context.dp(1).coerceAtLeast(1), context.dp(iconDp * 0.6f))
+                }
+                is Slot.App -> appIcon(slot)
+            }
+            if (i > 0) (v.layoutParams as LayoutParams).marginStart = gap
+            addView(v)
+        }
+    }
+
+    private fun appIcon(slot: Slot.App): View {
+        val size = context.dp(iconDp)
+        val frame = FrameLayout(context).apply {
+            layoutParams = LayoutParams(size, size + context.dp(6))
+            contentDescription = apps.entry(slot.pkg)?.label
+        }
+        frame.addView(ImageView(context).apply {
+            setImageDrawable(apps.icon(slot.pkg))
+            layoutParams = FrameLayout.LayoutParams(size, size, Gravity.TOP)
+        })
+        if (slot.active) frame.addView(View(context).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(finish.indicator); cornerRadius = context.dp(2).toFloat()
+            }
+            layoutParams = FrameLayout.LayoutParams(context.dp(iconDp * 0.34f), context.dp(3), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        })
+        frame.setOnClickListener { it.tick(); actions.onApp(slot.pkg, it) }
+        frame.setOnLongClickListener { it.thud(); actions.onAppHeld(slot.pkg, it); true }
+        return frame
+    }
+
+    private fun glyph(kind: Glyph, narrow: Boolean = false, onTap: (View) -> Unit): View =
+        GlyphView(context, kind, finish.ink).apply {
+            val size = context.dp(iconDp)
+            layoutParams = LayoutParams(if (narrow) (size * 0.55f).toInt() else size, size)
+            contentDescription = if (kind == Glyph.GRID) "All apps" else "Tuck the taskbar away"
+            setOnClickListener { it.tick(); onTap(it) }
+        }
+}
+
+enum class Glyph { GRID, CHEVRON }
+
+/** Draws the two non-app controls, so they scale with the icon size and take the finish's ink. */
+@SuppressLint("ViewConstructor")
+class GlyphView(context: Context, private val kind: Glyph, ink: Int) : View(context) {
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ink }
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = ink; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
+    private val r = RectF()
+    private val path = Path()
+
+    override fun onDraw(canvas: Canvas) {
+        val s = minOf(width, height).toFloat()
+        val cx = width / 2f
+        val cy = height / 2f
+        when (kind) {
+            Glyph.GRID -> {
+                val cell = s * 0.2f
+                val g = s * 0.08f
+                val start = cx - cell - g / 2
+                val top = cy - cell - g / 2
+                for (row in 0..1) for (col in 0..1) {
+                    r.set(start + col * (cell + g), top + row * (cell + g), start + col * (cell + g) + cell, top + row * (cell + g) + cell)
+                    canvas.drawRoundRect(r, cell * 0.3f, cell * 0.3f, fill)
+                }
+            }
+            Glyph.CHEVRON -> {
+                line.strokeWidth = s * 0.07f
+                val w = s * 0.2f
+                path.reset()
+                path.moveTo(cx - w, cy - w / 2); path.lineTo(cx, cy + w / 2); path.lineTo(cx + w, cy - w / 2)
+                line.alpha = 180
+                canvas.drawPath(path, line)
+            }
+        }
+    }
+}
