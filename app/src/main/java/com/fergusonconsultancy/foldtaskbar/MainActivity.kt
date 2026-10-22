@@ -90,12 +90,15 @@ class MainActivity : Activity() {
 
         heading(root, "Using it")
         root.addView(note(
-            "Tap an app to switch to it. Hold an app to open it in split screen or as a pop-up, or to pin it. " +
-                "Pinned apps sit on the left, recent apps on the right. The grid opens all apps. " +
-                "With auto-hide on, swipe up from just above the bottom edge, where the bar sits, to bring it back; " +
-                "it slips away again a few seconds after you stop using it. Hold the grid button to switch auto-hide on or off. " +
-                "Recent apps keep their place once they're in the bar; a new one replaces the one used longest ago. " +
-                "Hold the bar and slide to carry it anywhere. Let go near an edge and it docks there, standing upright on the sides; near the crease it centres on it. Throw it mostly off the screen, or hold the grid button and choose Collapse to a tab, and it folds into a tab on that edge. Tap the tab to bring the bar back, or slide the tab along its edge. The bar shows on the main screen everywhere, including your home screen, and only moves aside for the keyboard if the keyboard would cover it."
+            "Tap an app to switch to it. Press an app and slide it out of the bar to open it in split screen " +
+                "(towards the left, right, top or bottom half) or as a pop-up (the centre). In the grid, hold an app, then slide. " +
+                "Android decides whether a split is side by side or top and bottom; the half you choose decides which app comes first. " +
+                "Hold an app without sliding for its menu: pin, pair and more. " +
+                "Hold the grid button, the bar's handle, and slide to carry the bar anywhere. Let go near an edge and it docks, " +
+                "standing upright on the sides; near the crease it centres on it. Let go without sliding for the bar's menu: " +
+                "collapse to a tab, auto-hide and settings. Throwing the bar mostly off the screen also collapses it to a tab. " +
+                "Smoked glass turns dark over light screens and light over dark ones. " +
+                "The bar shows on the main screen everywhere and vanishes the instant you start to fold the phone."
         ))
 
         heading(root, "Event log")
