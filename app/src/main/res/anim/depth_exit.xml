@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Depth, outgoing app: steps back into the distance and fades, so you leave one world
+     as the next one comes forward over it. -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shareInterpolator="false"
+    android:zAdjustment="normal">
+    <scale android:fromXScale="1" android:toXScale="0.92" android:fromYScale="1" android:toYScale="0.92"
+        android:pivotX="50%" android:pivotY="50%"
+        android:duration="460" android:interpolator="@interpolator/fold_decel" />
+    <alpha android:fromAlpha="1" android:toAlpha="0"
+        android:startOffset="100" android:duration="340" android:interpolator="@interpolator/fold_accel" />
+</set>

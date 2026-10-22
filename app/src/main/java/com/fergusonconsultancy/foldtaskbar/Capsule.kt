@@ -16,6 +16,7 @@ sealed interface Slot {
     object AllApps : Slot
     object Divider : Slot
     data class App(val pkg: String) : Slot
+    data class AppPair(val left: String, val right: String) : Slot { val key get() = "pair:$left|$right" }
 }
 
 interface CapsuleActions {
@@ -23,6 +24,8 @@ interface CapsuleActions {
     fun onAppHeld(pkg: String, view: View)
     fun onAllApps(view: View)
     fun onAllAppsHeld(view: View)
+    fun onPair(left: String, right: String, view: View)
+    fun onPairHeld(left: String, right: String, view: View)
 }
 
 /** One capsule of the bar: a row of icons, sized only to what it holds. */
@@ -119,10 +122,45 @@ class Capsule(
                     layoutParams = if (vertical) LayoutParams(long, thin) else LayoutParams(thin, long)
                 }
                 is Slot.App -> appIcon(slot)
+                is Slot.AppPair -> pairIcon(slot)
             }
             if (i > 0) (v.layoutParams as LayoutParams).apply { if (vertical) topMargin = gap else marginStart = gap }
             addView(v)
         }
+    }
+
+    /** A pair: the left app up and to the left, the right app down and to the right. */
+    private fun pairIcon(slot: Slot.AppPair): View {
+        val size = context.dp(iconDp)
+        val small = (size * 0.68f).toInt()
+        val frame = FrameLayout(context).apply {
+            layoutParams = LayoutParams(size, size + context.dp(6))
+            contentDescription = "${apps.entry(slot.left)?.label} and ${apps.entry(slot.right)?.label}"
+        }
+        frame.addView(ImageView(context).apply {
+            setImageDrawable(apps.icon(slot.left))
+            layoutParams = FrameLayout.LayoutParams(small, small, Gravity.TOP or Gravity.START)
+        })
+        frame.addView(ImageView(context).apply {
+            setImageDrawable(apps.icon(slot.right))
+            elevation = context.dp(2).toFloat()
+            layoutParams = FrameLayout.LayoutParams(small, small, Gravity.TOP or Gravity.START).apply {
+                leftMargin = size - small; topMargin = size - small
+            }
+        })
+        frame.addView(indicator().also { indicators[slot.key] = it })
+        pressable(frame)
+        frame.setOnClickListener { it.tick(); actions.onPair(slot.left, slot.right, it) }
+        frame.setOnLongClickListener { it.thud(); actions.onPairHeld(slot.left, slot.right, it); true }
+        return frame
+    }
+
+    private fun indicator() = View(context).apply {
+        background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(finish.indicator); cornerRadius = context.dp(2).toFloat()
+        }
+        visibility = INVISIBLE
+        layoutParams = FrameLayout.LayoutParams(context.dp(iconDp * 0.34f), context.dp(3), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
     }
 
     private fun appIcon(slot: Slot.App): View {

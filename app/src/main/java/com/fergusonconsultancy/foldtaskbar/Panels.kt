@@ -83,6 +83,7 @@ class AppDrawer(
     private var grid: RecyclerView? = null
     private var adapter: Adapter? = null
     private var button: GlyphView? = null
+    private var title: TextView? = null
     private var key = ""
     private var running: Animator? = null
 
@@ -129,7 +130,7 @@ class AppDrawer(
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(finish.ink)
                 setPadding(context.dp(6), 0, 0, context.dp(12))
-            })
+            }.also { title = it })
             addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         panelHost = FrameLayout(context).apply {
@@ -156,7 +157,8 @@ class AppDrawer(
     fun refreshApps() = adapter?.submit(apps.all())
 
     /** [from] is the grid button: the drawer grows out of it and folds back into it. */
-    fun open(from: GlyphView?) {
+    fun open(from: GlyphView?, heading: String = "All apps") {
+        title?.text = heading
         val host = panelHost ?: return
         val p = panel ?: return
         val s = scrim ?: return

@@ -52,7 +52,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     private var barOn = false
     private var menuWindow: View? = null
     private lateinit var drawer: AppDrawer
-    private lateinit var aperture: ApertureFx
+    /** Picking the second app of a new pair from the grid. */
+    private var pairingFirst: String? = null
 
     /** Auto-hide: whether the bar has been called up, and the strips that call it. */
     private var revealed = false
@@ -66,6 +67,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
 
     /** Apps with a window on screen right now, the focused one first. */
     @Volatile private var onScreen: List<String> = emptyList()
+    /** Left edge of each app's window, to tell which side of a split each app is on. */
+    @Volatile private var onScreenLeft: Map<String, Int> = emptyMap()
     @Volatile private var keyboardTop: Int? = null
     @Volatile private var systemInFront = false
     private var hidePackages: Set<String> = emptySet()
@@ -80,8 +83,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     override fun onServiceConnected() {
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
-        drawer = AppDrawer(this, wm, apps, onOpenApp = { pkg, v -> launch(pkg, v) }, onHoldApp = { pkg, v -> openMenu(pkg, v) })
-        aperture = ApertureFx(this, wm).also { it.attach() }
+        drawer = AppDrawer(this, wm, apps, onOpenApp = { pkg, v -> fromGrid(pkg, v) }, onHoldApp = { pkg, v -> openMenu(pkg, v) })
         // The bar now stays on the home screen too; only system surfaces such as the
         // notification shade push it aside.
         hidePackages = setOf("com.android.systemui")
@@ -102,7 +104,6 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         removeBar()
         removeTab()
         closePanels()
-        aperture.detach()
         worker.quitSafely()
         super.onDestroy()
     }
@@ -148,6 +149,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     private fun scanWindows() {
         val list = runCatching { windows }.getOrDefault(emptyList())
         val found = mutableListOf<String>()
+        val lefts = HashMap<String, Int>()
         var imeTop: Int? = null
         var system = false
         val r = Rect()
@@ -158,13 +160,14 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
                 AccessibilityWindowInfo.TYPE_APPLICATION -> {
                     val pkg = runCatching { w.root?.packageName?.toString() }.getOrNull() ?: continue
                     if (w.isFocused) found.add(0, pkg) else found.add(pkg)
+                    w.getBoundsInScreen(r); lefts[pkg] = r.left
                 }
             }
         }
         keyboardTop = imeTop
         systemInFront = system
         // An empty list is a transition in progress, not a real state. Keep the last one.
-        if (found.isNotEmpty()) onScreen = found.distinct()
+        if (found.isNotEmpty()) { onScreen = found.distinct(); onScreenLeft = lefts }
     }
 
     private fun homePackages(): Set<String> =
@@ -217,7 +220,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         }
 
         val groups = slotGroups(shape, iconDp, bounds.width())
-        val active = onScreen.toSet()
+        val active = onScreen.toSet() + Prefs.pairs(this)
+            .filter { (l, r) -> l in onScreen && r in onScreen }
+            .map { (l, r) -> Slot.AppPair(l, r).key }
         capsules.forEachIndexed { i, c -> c.show(groups.getOrElse(i) { emptyList() }, active) }
 
         val collapsed = Prefs.collapsed(this)
@@ -725,19 +730,22 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     private fun slotGroups(shape: Shape, iconDp: Int, screenW: Int): List<List<Slot>> {
         val maxSlots = maxSlots(screenW, iconDp, shape)
         val pinned = Prefs.pinned(this).filter { apps.isLaunchable(it) }
+        val pairs = Prefs.pairs(this).filter { (l, r) -> apps.isLaunchable(l) && apps.isLaunchable(r) }
+            .map { (l, r) -> Slot.AppPair(l, r) }
         val tray = Prefs.tray(this)
             .filter { it !in pinned && it !in noRecents && apps.isLaunchable(it) }
             .take(Prefs.recentCount(this))
         return when (shape) {
             Shape.PAIR -> listOf(
-                listOf(Slot.AllApps) + pinned.take(maxSlots - 1).map { Slot.App(it) },
+                (listOf(Slot.AllApps) + pinned.map { Slot.App(it) } + pairs).take(maxSlots),
                 tray.take(maxSlots).map { Slot.App(it) },
             )
             Shape.CAPSULE -> {
                 val p = pinned.take((maxSlots - 1) / 2 + 1)
-                val r = tray.take(maxSlots - 1 - p.size)
+                val r = tray.take((maxSlots - 1 - p.size - pairs.size).coerceAtLeast(1))
+                val pr = pairs.take((maxSlots - 1 - p.size).coerceAtLeast(0))
                 listOf(
-                    listOf(Slot.AllApps) + p.map { Slot.App(it) } +
+                    listOf(Slot.AllApps) + p.map { Slot.App(it) } + pr +
                         (if (p.isNotEmpty() && r.isNotEmpty()) listOf(Slot.Divider) else emptyList()) +
                         r.map { Slot.App(it) }
                 )
@@ -801,12 +809,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         if (onScreen.size == 1 && onScreen.first() == pkg) { closePanels(); return }
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
-        // Launch first, on this frame; the motion runs alongside and never delays the app
+        // Launch first, on this frame; the motion is the app's own window moving
         apps.open(pkg, source)
-        if (source != null && source.isAttachedToWindow && Prefs.aperture(this)) {
-            val loc = IntArray(2).also { source.getLocationOnScreen(it) }
-            aperture.play(loc[0] + source.width / 2f, loc[1] + source.height / 2f)
-        }
         closePanels()
         if (Prefs.autoHide(this) && revealed) {
             main.removeCallbacks(autoHideNow)
@@ -821,6 +825,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         (view as? GlyphView)?.animateOpen(0f, Curves.CLOSE_MS, Curves.CLOSE)
         val auto = Prefs.autoHide(this)
         showMenu("Taskbar", listOf(
+            *(splitPair()?.let { (l, r) ->
+                arrayOf("Save ${apps.entry(l)?.label} + ${apps.entry(r)?.label} as a pair" to {
+                    closeMenu(); Prefs.addPair(this, l, r)
+                    EventLog.add(this, "Pair saved from the screen: ${apps.entry(l)?.label} + ${apps.entry(r)?.label}")
+                })
+            } ?: emptyArray()),
             "Collapse to a tab" to {
                 closeMenu()
                 hosts.firstOrNull()?.let { host ->
@@ -843,52 +853,81 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         ), view)
     }
 
+    /** The two apps currently sharing the screen, left first, if there are two. */
+    private fun splitPair(): Pair<String, String>? {
+        val two = onScreen.filter { it !in noRecents && apps.isLaunchable(it) }.take(2)
+        if (two.size < 2) return null
+        val (a, b) = two.sortedBy { onScreenLeft[it] ?: 0 }
+        return a to b
+    }
+
     override fun onAllApps(view: View) {
         closeMenu()
+        pairingFirst = null
         if (drawer.isOpen) drawer.close() else drawer.open(view as? GlyphView)
         onBarTouched()
     }
 
     /**
-     * Opens [pkg] beside the app on screen. The request goes through [SplitActivity],
-     * because Android only splits the screen for a request from a full-screen app. If
-     * One UI still refuses, Android's split-screen shortcut is tried once.
+     * Opens [pkg] beside the app on screen, through [SplitActivity]: Android only splits
+     * the screen for a request from a full-screen app.
      */
     private fun splitWith(pkg: String) {
         closePanels()
         val label = apps.entry(pkg)?.label ?: pkg
         val target = apps.entry(pkg)?.component ?: return
-        val apps2 = onScreen.filter { it !in hidePackages }
         val current = onScreen.firstOrNull()
-        if (current == null || current in noRecents) {
-            EventLog.add(this, "Split: needs an app on screen to sit beside; opened $label instead")
+        if (current == null || current in noRecents || current == pkg) {
+            EventLog.add(this, "Split: needs another app on screen to sit beside; opened $label instead")
             apps.open(pkg)
             return
         }
-        val back = if (apps2.size >= 2) null else apps.entry(current)?.component
-        val intent = Intent(this, SplitActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-            .putExtra(SplitActivity.EXTRA_TARGET, target)
-            .putExtra(SplitActivity.EXTRA_BACK, back)
-        runCatching { startActivity(intent) }
-            .onFailure { EventLog.add(this, "Split: could not start (${it.javaClass.simpleName})") }
+        // Already split: the new app replaces the other half, so nothing to hand back
+        val left = if (onScreen.count { it !in noRecents } >= 2) null else apps.entry(current)?.component
+        startSplit(left, target)
+    }
 
+    /** Opens a saved pair: [left] on the left half, [right] on the right. */
+    private fun openPair(left: String, right: String) {
+        closePanels()
+        val l = apps.entry(left)?.component ?: return
+        val r = apps.entry(right)?.component ?: return
+        startSplit(l, r)
+    }
+
+    private fun startSplit(left: android.content.ComponentName?, right: android.content.ComponentName) {
+        runCatching { startActivity(SplitActivity.intent(this, left, right)) }
+            .onFailure { EventLog.add(this, "Split: could not start (${it.javaClass.simpleName})") }
         main.postDelayed({
             bg.post {
                 scanWindows()
-                val seen = onScreen
-                main.post {
-                    val names = seen.joinToString(" + ") { apps.entry(it)?.label ?: it }
-                    if (seen.size >= 2 && pkg in seen) {
-                        EventLog.add(this, "Split worked: $names")
-                    } else {
-                        EventLog.add(this, "Split refused by One UI (on screen: $names). Trying the split-screen shortcut")
-                        val ok = performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
-                        EventLog.add(this, "Split-screen shortcut ${if (ok) "accepted" else "refused"}")
-                    }
-                }
+                val names = onScreen.joinToString(" + ") { apps.entry(it)?.label ?: it }
+                EventLog.add(this, "Split result: on screen now $names")
             }
-        }, 1400)
+        }, 2200)
+    }
+
+    override fun onPair(left: String, right: String, view: View) = openPair(left, right)
+
+    override fun onPairHeld(left: String, right: String, view: View) {
+        closePanels()
+        val name = "${apps.entry(left)?.label} + ${apps.entry(right)?.label}"
+        showMenu(name, listOf(
+            "Open pair" to { openPair(left, right) },
+            "Swap sides" to { closeMenu(); Prefs.removePair(this, left, right); Prefs.addPair(this, right, left) },
+            "Remove pair" to { closeMenu(); Prefs.removePair(this, left, right) },
+        ), view)
+    }
+
+    /** A tap in the grid opens the app, or completes a pair when one is being made. */
+    private fun fromGrid(pkg: String, view: View) {
+        val first = pairingFirst
+        pairingFirst = null
+        if (first == null) { launch(pkg, view); return }
+        if (first == pkg) { closePanels(); return }
+        Prefs.addPair(this, first, pkg)
+        EventLog.add(this, "Pair saved: ${apps.entry(first)?.label} + ${apps.entry(pkg)?.label}")
+        openPair(first, pkg)
     }
 
     private fun openMenu(pkg: String, anchor: View) {
@@ -898,6 +937,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         val rows = buildList<Pair<String, () -> Unit>> {
             add("Open in split screen" to { splitWith(pkg) })
             add("Open as pop-up (experimental)" to { closePanels(); apps.openPopup(pkg, wm.currentWindowMetrics.bounds) })
+            add("Pair with another app" to {
+                closeMenu()
+                pairingFirst = pkg
+                drawer.open(null, "Pair ${apps.entry(pkg)?.label ?: "this app"} with…")
+            })
             add((if (isPinned) "Unpin from taskbar" else "Pin to taskbar") to {
                 closeMenu()
                 Prefs.togglePin(this@TaskbarService, pkg)

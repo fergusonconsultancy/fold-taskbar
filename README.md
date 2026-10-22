@@ -10,7 +10,8 @@ A taskbar for the Galaxy Z Fold 8 Ultra's main screen that works with any launch
 - Movable: hold the bar and slide it anywhere. It docks to edges (upright on the sides) and centres on the crease when close to it.
 - Collapses to a high-contrast tab: throw it off an edge, or hold the grid button and choose Collapse to a tab. The tab samples the pixels around it and flips its tone to stand out.
 - Two shapes (Hinge pair, Capsule), three finishes (Smoked glass, Visconti, Paper), three icon sizes.
-- App switching uses Aperture: the app grows from the icon you tapped while a machined double ring opens from it to the screen edges. Switchable to the system animation.
+- App switching uses Depth: the app you open comes forward out of the bar from its icon's side while the one you leave steps back and fades. Switchable to the system animation.
+- App pairs: hold an app and choose Pair with another app, or hold the grid button to save the two apps on screen as a pair. Pairs sit in the bar and open both apps in split screen.
 - Always showing by default, or auto-hide: swipe up where the bar sits to call it back. Hold the grid button to switch.
 
 ## Get the APK
@@ -29,6 +30,6 @@ It is the only way an ordinary app can draw over every other app, know which app
 ## Limits
 
 - The bar floats over apps. Unlike Samsung's taskbar, it cannot make apps resize above it, so it covers a strip at the bottom.
-- Split screen goes through an invisible full-screen stepping stone, because Android only honours "open beside me" from a full-screen app. If One UI still refuses, the split-screen shortcut is tried. The event log records the outcome.
+- Split screen and pairs go through a full-screen stepping stone, because Android only honours "open beside me" from a full-screen app. Each step is written to the event log.
 - Pop-up windows use a mode Android hides from ordinary apps. One UI may open the app full screen instead.
 - Full-screen video is not detected yet, so the bar stays over it.

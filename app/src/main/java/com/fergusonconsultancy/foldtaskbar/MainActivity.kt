@@ -76,8 +76,8 @@ class MainActivity : Activity() {
         root.addView(choice({ if (Prefs.autoHide(this)) "Auto-hide: on" else "Auto-hide: off (always showing)" }) {
             Prefs.setAutoHide(this, !Prefs.autoHide(this))
         })
-        root.addView(choice({ if (Prefs.aperture(this)) "App switching: Aperture" else "App switching: system animation" }) {
-            Prefs.setAperture(this, !Prefs.aperture(this))
+        root.addView(choice({ if (Prefs.depth(this)) "App switching: Depth" else "App switching: system animation" }) {
+            Prefs.setDepth(this, !Prefs.depth(this))
         })
         root.addView(button("Put the taskbar back at the bottom") {
             Prefs.resetSpots(this); refresh()
@@ -132,7 +132,7 @@ class MainActivity : Activity() {
                 }
             )
             append("App switching: ")
-            append(if (Prefs.aperture(this@MainActivity)) "Aperture" else "system animation")
+            append(if (Prefs.depth(this@MainActivity)) "Depth" else "system animation")
         }
         choiceButtons.forEach { (b, label) -> b.text = label() }
         logText.text = EventLog.read(this)

@@ -22,7 +22,8 @@ object Prefs {
     private const val RECENTS = "recents"
     private const val TRAY = "tray"
     private const val AUTO_HIDE = "auto_hide"
-    private const val APERTURE = "aperture"
+    private const val DEPTH = "depth"
+    private const val PAIRS = "pairs"
     private const val COLLAPSED = "collapsed"
 
     val ICON_SIZES = listOf(40, 44, 52)
@@ -63,9 +64,21 @@ object Prefs {
         if (v == null) remove(COLLAPSED) else putString(COLLAPSED, "${v.first},${v.second}")
     }.apply()
 
-    /** The Aperture app-switch transition; off means the plain system animation. */
-    fun aperture(c: Context) = of(c).getBoolean(APERTURE, true)
-    fun setAperture(c: Context, v: Boolean) = of(c).edit().putBoolean(APERTURE, v).apply()
+    /** The Depth app-switch transition; off means the plain system animation. */
+    fun depth(c: Context) = of(c).getBoolean(DEPTH, true)
+    fun setDepth(c: Context, v: Boolean) = of(c).edit().putBoolean(DEPTH, v).apply()
+
+    /** App pairs, left app first. */
+    fun pairs(c: Context): List<Pair<String, String>> = list(c, PAIRS)
+        .mapNotNull { it.split('|').takeIf { p -> p.size == 2 }?.let { p -> p[0] to p[1] } }
+
+    fun addPair(c: Context, left: String, right: String) {
+        val now = pairs(c).filter { it != (left to right) }
+        save(c, PAIRS, (now + (left to right)).map { "${it.first}|${it.second}" })
+    }
+
+    fun removePair(c: Context, left: String, right: String) =
+        save(c, PAIRS, pairs(c).filter { it != (left to right) }.map { "${it.first}|${it.second}" })
 
     fun autoHide(c: Context) = of(c).getBoolean(AUTO_HIDE, false)
     fun setAutoHide(c: Context, v: Boolean) = of(c).edit().putBoolean(AUTO_HIDE, v).apply()
