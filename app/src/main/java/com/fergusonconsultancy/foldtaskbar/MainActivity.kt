@@ -113,6 +113,11 @@ class MainActivity : Activity() {
         }
         root.addView(logText)
         root.addView(button("Clear log") { EventLog.clear(this); refresh() })
+        root.addView(button("Learn split screen again from the start") {
+            Prefs.setHandover(this, 0)
+            EventLog.add(this, "Split screen: starting again with the Samsung split shortcut")
+            refresh()
+        })
 
         setContentView(ScrollView(this).apply {
             setBackgroundColor(Color.rgb(14, 20, 17))

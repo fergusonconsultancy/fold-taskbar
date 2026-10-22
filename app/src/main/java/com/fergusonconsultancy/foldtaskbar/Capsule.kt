@@ -28,6 +28,9 @@ interface CapsuleActions {
     fun onPairHeld(left: String, right: String, view: View)
 }
 
+/** How many stretches of the bar adapt their tone separately. */
+const val ZONES = 8
+
 /** One capsule of the bar: a row of icons, sized only to what it holds. */
 @SuppressLint("ViewConstructor")
 class Capsule(
@@ -46,19 +49,22 @@ class Capsule(
     private val dividers = mutableListOf<View>()
     private var grid: GlyphView? = null
 
-    // The capsule's current colours. Smoked glass changes them to suit what is behind it.
-    private var fillNow = finish.fill
-    private var inkNow = finish.ink
-    private var edgeNow = finish.edge
-    private var lightNow = finish.indicator
-    private var lightBar: Boolean? = null
+    // The capsule's colours, zone by zone along its length. Smoked glass sets each zone to
+    // suit what is behind that part of the bar; fixed finishes keep every zone the same.
+    private val zones = ZONES
+    private var fills = IntArray(zones) { finish.fill }
+    private var inks = IntArray(zones) { finish.ink }
+    private var edges = IntArray(zones) { finish.edge }
+    private var glows = IntArray(zones) { finish.indicator }
+    private val lightZone = arrayOfNulls<Boolean>(zones)
     private var toneAnim: android.animation.ValueAnimator? = null
+    private val glass = Glass()
     private var current: List<Slot> = emptyList()
 
     init {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        background = surface(context, finish, 999f)
+        background = glass
         setPadding(padX, padY, padX, padY)
         // Room for the shadow that lifts the capsule off the app beneath
         elevation = context.dp(6).toFloat()
@@ -93,32 +99,39 @@ class Capsule(
     }
 
     /**
-     * Smoked glass: given the average colour behind the capsule, turn dark over light
-     * content and light over dark content, borrowing a trace of the colour underneath so
-     * the glass belongs to what it sits on. The thresholds overlap, so mid-tones never
-     * make it flicker between the two.
+     * Smoked glass, zone by zone. [behind] holds the colour and brightness behind each
+     * stretch of the capsule, start to end. Each zone turns dark over light content and
+     * light over dark, borrowing a trace of the colour underneath; the zones blend into one
+     * continuous piece of glass, so a bar half over a white page and half over a dark photo
+     * is smoke on one side and frost on the other. Each zone's thresholds overlap, so
+     * mid-tones never make it flicker.
      */
-    fun adaptTo(behind: Int, luminance: Float) {
-        val light = when {
-            luminance < 0.36f -> true
-            luminance > 0.54f -> false
-            else -> lightBar ?: false
+    fun adaptTo(behind: List<Pair<Int, Float>?>) {
+        if (behind.size != zones) return
+        val f = fills.copyOf(); val i = inks.copyOf(); val e = edges.copyOf(); val g = glows.copyOf()
+        for (z in 0 until zones) {
+            val (colour, lum) = behind[z] ?: continue
+            val light = when {
+                lum < 0.36f -> true
+                lum > 0.54f -> false
+                else -> lightZone[z] ?: false
+            }
+            lightZone[z] = light
+            val base = if (light) 0xF4F0E8 else 0x101412
+            val tint = if (light) 0.10f else 0.14f
+            fun ch(shift: Int) = ((((base shr shift) and 255) * (1 - tint)) + (((colour shr shift) and 255) * tint)).toInt()
+            f[z] = ((if (light) 0xE8 else 0xDB) shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+            i[z] = if (light) 0xFF1A201C.toInt() else 0xFFEDEAE2.toInt()
+            e[z] = if (light) 0x1F000000 else 0x1AFFFFFF
+            g[z] = if (light) 0xFF8C6A33.toInt() else 0xFFD3B27C.toInt()
         }
-        lightBar = light
-        val base = if (light) 0xF4F0E8 else 0x101412
-        val tint = if (light) 0.10f else 0.14f
-        fun ch(shift: Int) = ((((base shr shift) and 255) * (1 - tint)) + (((behind shr shift) and 255) * tint)).toInt()
-        val fill = ((if (light) 0xE8 else 0xDB) shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
-        val ink = if (light) 0xFF1A201C.toInt() else 0xFFEDEAE2.toInt()
-        val edge = if (light) 0x1F000000 else 0x1AFFFFFF
-        val glow = if (light) 0xFF8C6A33.toInt() else 0xFFD3B27C.toInt()
-        toneTo(fill, ink, edge, glow)
+        toneTo(f, i, e, g)
     }
 
-    private fun toneTo(fill: Int, ink: Int, edge: Int, glow: Int) {
-        if (fill == fillNow && ink == inkNow && edge == edgeNow && glow == lightNow) return
-        val from = intArrayOf(fillNow, inkNow, edgeNow, lightNow)
-        val to = intArrayOf(fill, ink, edge, glow)
+    private fun toneTo(f: IntArray, i: IntArray, e: IntArray, g: IntArray) {
+        if (f.contentEquals(fills) && i.contentEquals(inks) && e.contentEquals(edges) && g.contentEquals(glows)) return
+        val from = listOf(fills.copyOf(), inks.copyOf(), edges.copyOf(), glows.copyOf())
+        val to = listOf(f, i, e, g)
         val ev = android.animation.ArgbEvaluator()
         toneAnim?.cancel()
         toneAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
@@ -126,24 +139,66 @@ class Capsule(
             interpolator = Curves.OPEN
             addUpdateListener { a ->
                 val t = a.animatedFraction
-                paint(
-                    ev.evaluate(t, from[0], to[0]) as Int, ev.evaluate(t, from[1], to[1]) as Int,
-                    ev.evaluate(t, from[2], to[2]) as Int, ev.evaluate(t, from[3], to[3]) as Int,
-                )
+                val mix = (0..3).map { k -> IntArray(zones) { z -> ev.evaluate(t, from[k][z], to[k][z]) as Int } }
+                paint(mix[0], mix[1], mix[2], mix[3])
             }
             start()
         }
     }
 
-    private fun paint(fill: Int, ink: Int, edge: Int, glow: Int) {
-        fillNow = fill; inkNow = ink; edgeNow = edge; lightNow = glow
-        (background as? android.graphics.drawable.GradientDrawable)?.apply {
-            setColor(fill)
-            setStroke(context.dp(1).coerceAtLeast(1), edge)
+    private fun paint(f: IntArray, i: IntArray, e: IntArray, g: IntArray) {
+        fills = f; inks = i; edges = e; glows = g
+        glass.invalidateSelf()
+        // Every mark on the bar takes the tone of the zone it sits in
+        grid?.let { it.setInk(inks[zoneOf(it)]) }
+        dividers.forEach { it.setBackgroundColor((inks[zoneOf(it)] and 0x00FFFFFF) or 0x30000000) }
+        indicators.values.forEach { v ->
+            val frame = v.parent as? View ?: v
+            (v.background as? android.graphics.drawable.GradientDrawable)?.setColor(glows[zoneOf(frame)])
         }
-        grid?.setInk(ink)
-        dividers.forEach { it.setBackgroundColor((ink and 0x00FFFFFF) or 0x30000000) }
-        indicators.values.forEach { (it.background as? android.graphics.drawable.GradientDrawable)?.setColor(glow) }
+    }
+
+    /** Which zone a child sits in, by its centre along the capsule. */
+    private fun zoneOf(v: View): Int {
+        val len = if (vertical) height else width
+        if (len <= 0) return 0
+        val c = if (vertical) v.top + v.height / 2f else v.left + v.width / 2f
+        return (c / len * zones).toInt().coerceIn(0, zones - 1)
+    }
+
+    /** The glass itself: one rounded capsule whose fill and edge run through the zones' colours. */
+    private inner class Glass : android.graphics.drawable.Drawable() {
+        private val fillPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        private val edgePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = context.dp(1).coerceAtLeast(1).toFloat()
+        }
+        private val r = RectF()
+        private val stops = FloatArray(ZONES) { (it + 0.5f) / ZONES }
+
+        override fun draw(canvas: Canvas) {
+            val b = bounds
+            if (b.isEmpty) return
+            r.set(b)
+            val radius = minOf(r.width(), r.height()) / 2f
+            val x1 = if (vertical) r.left else r.right
+            val y1 = if (vertical) r.bottom else r.top
+            fillPaint.shader = android.graphics.LinearGradient(r.left, r.top, x1, y1, fills, stops, android.graphics.Shader.TileMode.CLAMP)
+            canvas.drawRoundRect(r, radius, radius, fillPaint)
+            val h = edgePaint.strokeWidth / 2
+            r.inset(h, h)
+            edgePaint.shader = android.graphics.LinearGradient(r.left, r.top, x1, y1, edges, stops, android.graphics.Shader.TileMode.CLAMP)
+            canvas.drawRoundRect(r, radius - h, radius - h, edgePaint)
+        }
+
+        override fun setAlpha(alpha: Int) = Unit
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) = Unit
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
+        override fun getOutline(outline: android.graphics.Outline) {
+            val b = bounds
+            outline.setRoundRect(b, minOf(b.width(), b.height()) / 2f)
+        }
     }
 
     /** The app icon under a point on screen, for dragging an app out of the bar. */
@@ -212,7 +267,7 @@ class Capsule(
             if (i > 0) (v.layoutParams as LayoutParams).apply { if (vertical) topMargin = gap else marginStart = gap }
             addView(v)
         }
-        paint(fillNow, inkNow, edgeNow, lightNow)
+        post { paint(fills, inks, edges, glows) }
     }
 
     /** A pair: the left app up and to the left, the right app down and to the right. */

@@ -63,12 +63,18 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
         var fx = 0f
         var fy = 0f
 
-        private val panel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x660E1311 }
+        private val panel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0E1311.toInt() }
         private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE; color = 0xFFD9BB86.toInt(); strokeWidth = context.dp(2).toFloat()
         }
         private val crease = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFD9BB86.toInt() }
         private val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x55000000 }
+        private val dim = Paint().apply { color = 0xFF000000.toInt() }
+        private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFEDEAE2.toInt(); textAlign = Paint.Align.CENTER
+        }
+        private var ix = Float.NaN
+        private var iy = Float.NaN
         private val shown = RectF()
         private val target = RectF()
         private var panelAlpha = 0f
@@ -115,8 +121,12 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
             panelAlpha += (want - panelAlpha) * k
 
             if (panelAlpha > 0.01f) {
+                // The rest of the screen steps back...
+                dim.alpha = (0x70 * panelAlpha).toInt()
+                canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), dim)
+                // ...and the place the app will take comes forward, solid, with a champagne edge
                 val r = context.dp(24).toFloat()
-                panel.alpha = (0x66 * panelAlpha).toInt()
+                panel.alpha = (0xD8 * panelAlpha).toInt()
                 edge.alpha = (255 * panelAlpha).toInt()
                 canvas.drawRoundRect(shown, r, r, panel)
                 canvas.drawRoundRect(shown, r, r, edge)
@@ -127,17 +137,28 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
                 if (zone == Drop.TOP || zone == Drop.BOTTOM) canvas.drawLine(0f, height / 2f, width.toFloat(), height / 2f, crease)
             }
 
-            // The app itself, lifted under your finger
+            // The app: under your finger while it travels, then it settles into the middle of
+            // the place it will open, as One UI does, with the instruction beneath it
+            val settled = zone != Drop.NONE
+            val wantX = if (settled) shown.centerX() else fx
+            val wantY = if (settled) shown.centerY() - context.dp(16) else fy - context.dp(28)
+            if (ix.isNaN()) { ix = wantX; iy = wantY }
+            ix += (wantX - ix) * k; iy += (wantY - iy) * k
             icon?.let {
-                val s = context.dp(60)
-                val l = (fx - s / 2).toInt(); val t = (fy - s / 2 - context.dp(28)).toInt()
-                canvas.drawCircle(fx, t + s / 2f + context.dp(6), s * 0.46f, shadow)
+                val s = context.dp(if (settled) 72 else 60)
+                val l = (ix - s / 2).toInt(); val t = (iy - s / 2).toInt()
+                if (!settled) canvas.drawCircle(ix, iy + context.dp(6), s * 0.46f, shadow)
                 it.setBounds(l, t, l + s, t + s)
                 it.draw(canvas)
             }
+            if (panelAlpha > 0.5f) {
+                label.alpha = (255 * (panelAlpha - 0.5f) * 2).toInt().coerceIn(0, 255)
+                label.textSize = context.dp(14).toFloat()
+                canvas.drawText(if (zone == Drop.POPUP) "Drop here for a pop-up" else "Drop here to open", ix, iy + context.dp(60), label)
+            }
 
             val settling = abs(shown.left - target.left) + abs(shown.right - target.right) +
-                abs(shown.top - target.top) + abs(want - panelAlpha) * 100 > 1f
+                abs(shown.top - target.top) + abs(want - panelAlpha) * 100 + abs(ix - wantX) + abs(iy - wantY) > 1f
             if (settling) postInvalidateOnAnimation()
         }
 

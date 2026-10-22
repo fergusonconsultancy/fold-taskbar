@@ -83,36 +83,81 @@ class SplitActivity : Activity() {
         handedOver = true
         EventLog.add(this, "Split step 3: screen split")
         val l = left
-        if (l == null) { finishQuietly(); return }
+        if (l == null) {
+            if (intent.getBooleanExtra(EXTRA_PICKER, false)) showPicker() else finishQuietly()
+            return
+        }
         // Let the split finish settling before the left half changes hands. Too soon, and
         // One UI treated the left app as a separate full-screen launch.
         main.postDelayed({
             runCatching { handOver(l) }
-                .onSuccess { EventLog.add(this, "Split step 4: handed this half to ${l.packageName} (${HANDOVERS[method]})") }
-                .onFailure { EventLog.add(this, "Split step 4 failed (${HANDOVERS[method]}): ${it.javaClass.simpleName}") }
+                .onSuccess { EventLog.add(this, "Split step 4: handed this half to ${l.packageName}") }
+                .onFailure { EventLog.add(this, "Split step 4 failed: ${it.javaClass.simpleName}") }
             main.postDelayed(::finishQuietly, 700)
         }, 600)
     }
 
     /**
-     * The left half has to go to the app you were using. One UI does not accept the
-     * obvious way (relaunching it), so there are three, tried in turn until one works:
-     * relaunch it; relaunch it asking for a split-screen window; or open it inside this
-     * screen's own window stack, which keeps it in this half by construction.
+     * The other half has to go to the second app. One UI will not move an app that is
+     * already open into this half, so there are two ways: relaunch it (works for an app
+     * that is not already running), or open a fresh window of it (method 1; works for
+     * apps that allow more than one window, which most Samsung and Google apps do).
      */
     private fun handOver(l: ComponentName) {
-        when (method) {
-            0 -> startActivity(launcher(l).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            1 -> {
-                val o = android.app.ActivityOptions.makeBasic()
-                org.lsposed.hiddenapibypass.HiddenApiBypass.invoke(
-                    android.app.ActivityOptions::class.java, o, "setLaunchWindowingMode", WINDOWING_MODE_MULTI_WINDOW,
-                )
-                startActivity(launcher(l).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), o.toBundle())
-            }
-            else -> startActivity(launcher(l))
-        }
+        val flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+            (if (method == 1) Intent.FLAG_ACTIVITY_MULTIPLE_TASK else 0)
+        startActivity(launcher(l).addFlags(flags))
     }
+
+    /**
+     * Opened from the home screen there is no second app yet, so, as One UI does, this
+     * half offers the apps to choose from. The choice opens in a fresh window so it stays
+     * in this half.
+     */
+    private fun showPicker() {
+        EventLog.add(this, "Split step 4: choosing the app for the other half")
+        val apps = Apps(this)
+        val pad = dp(20)
+        val grid = android.widget.GridLayout(this).apply { columnCount = 4; setPadding(pad, pad, pad, pad) }
+        apps.all().forEach { app ->
+            grid.addView(android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                gravity = android.view.Gravity.CENTER_HORIZONTAL
+                setPadding(0, dp(8), 0, dp(12))
+                layoutParams = android.widget.GridLayout.LayoutParams().apply {
+                    width = 0; columnSpec = android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1f)
+                }
+                addView(android.widget.ImageView(this@SplitActivity).apply {
+                    setImageDrawable(apps.icon(app.pkg))
+                    layoutParams = android.widget.LinearLayout.LayoutParams(dp(52), dp(52))
+                })
+                addView(android.widget.TextView(this@SplitActivity).apply {
+                    text = app.label; textSize = 12f; setTextColor(0xFFE6E8E2.toInt())
+                    gravity = android.view.Gravity.CENTER; maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(dp(2), dp(6), dp(2), 0)
+                })
+                setOnClickListener {
+                    runCatching {
+                        startActivity(launcher(app.component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK))
+                    }.onSuccess { EventLog.add(this@SplitActivity, "Split step 5: chose ${app.label}") }
+                    main.postDelayed(::finishQuietly, 700)
+                }
+            })
+        }
+        setContentView(android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0E1311.toInt())
+            addView(android.widget.TextView(this@SplitActivity).apply {
+                text = "Choose an app for this side"
+                textSize = 16f; setTextColor(0xFFD9BB86.toInt())
+                setPadding(pad, pad * 2, pad, 0)
+            })
+            addView(android.widget.ScrollView(this@SplitActivity).apply { addView(grid) })
+        })
+    }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun finishQuietly() {
         if (isFinishing) return
@@ -166,13 +211,13 @@ class SplitActivity : Activity() {
         const val EXTRA_RIGHT = "right"
         const val EXTRA_LEFT = "left"
         const val EXTRA_METHOD = "method"
-        private const val WINDOWING_MODE_MULTI_WINDOW = 6
-        val HANDOVERS = listOf("relaunch", "split-window request", "inside the stepping stone", "two pop-ups")
+        const val EXTRA_PICKER = "picker"
         private const val ASK_AFTER_MS = 260L
         private const val GIVE_UP_MS = 1600L
 
-        fun intent(context: Context, left: ComponentName?, right: ComponentName, method: Int) =
+        fun intent(context: Context, left: ComponentName?, right: ComponentName, method: Int, picker: Boolean = false) =
             Intent(context, SplitActivity::class.java)
+                .putExtra(EXTRA_PICKER, picker)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 .putExtra(EXTRA_LEFT, left)
                 .putExtra(EXTRA_RIGHT, right)

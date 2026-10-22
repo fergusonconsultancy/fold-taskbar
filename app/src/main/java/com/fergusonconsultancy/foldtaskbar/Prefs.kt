@@ -35,7 +35,7 @@ object Prefs {
     private const val TRAY = "tray"
     private const val AUTO_HIDE = "auto_hide"
     private const val MOTION = "motion"
-    private const val HANDOVER = "handover"
+    private const val HANDOVER = "handover2"
     private const val PAIRS = "pairs"
     private const val COLLAPSED = "collapsed"
 

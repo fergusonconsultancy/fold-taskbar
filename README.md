@@ -9,7 +9,7 @@ A taskbar for the Galaxy Z Fold 8 Ultra's main screen that works with any launch
 - Shows everywhere on the main screen, home screen included. Hides on the cover screen, the lock screen and the notification shade, and steps aside for the keyboard only if the keyboard would cover it.
 - Movable: hold the grid button (the bar's handle) and slide it anywhere. It docks to edges (upright on the sides) and centres on the crease when close to it.
 - Collapses to a high-contrast tab: throw it off an edge, or hold the grid button and choose Collapse to a tab. The tab samples the pixels around it and flips its tone to stand out.
-- Two shapes (Hinge pair, Capsule), three finishes, three icon sizes. Smoked glass is adaptive: it reads what is behind it and turns dark over light content, light over dark, with a trace of the colour underneath.
+- Two shapes (Hinge pair, Capsule), three finishes, three icon sizes. Smoked glass is adaptive zone by zone: each of eight stretches of the bar reads what is behind it and turns dark over light content, light over dark, with a trace of the colour underneath, blended into one continuous piece of glass.
 - App switching: Zoom (the app's last screen grows out of its icon and dissolves into the live app), Reveal, Grow or the system animation. A refused animation never stops an app opening.
 - Drag any app out of the bar (press and slide) or the grid (hold, then slide): towards the left, right, top or bottom half for split screen, the centre for a pop-up. Android decides whether the split is side by side or top and bottom; the half you choose decides which app comes first.
 - Vanishes the instant the phone starts to fold (hinge sensor), so it never lingers on the cover screen.
@@ -32,7 +32,7 @@ It is the only way an ordinary app can draw over every other app, know which app
 ## Limits
 
 - The bar floats over apps. Unlike Samsung's taskbar, it cannot make apps resize above it, so it covers a strip at the bottom.
-- Split screen and pairs go through a full-screen stepping stone, because Android only honours "open beside me" from a full-screen app. The way the left half is filled is learnt: each attempt is checked and the next method is used if One UI did not keep both apps. Last resort: two pop-ups side by side.
+- One UI keeps split-screen control to itself. Four routes are learnt in turn (Samsung's split shortcut, a fresh window, a relaunch, then a pop-up filling the half) and each attempt is checked. Settings can restart the learning. Dropping an app from the home screen opens it in a half with a picker for the other half, as One UI does.
 - Flex mode (phone half open) hides the bar, because the hinge reads as closing.
 - Pop-up windows use a mode Android hides from ordinary apps. One UI may open the app full screen instead.
 - Full-screen video is not detected yet, so the bar stays over it.

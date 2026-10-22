@@ -718,7 +718,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val tabR = Prefs.collapsed(this)?.takeIf { tab != null }?.let { tabRect(it.first, it.second) }
         val snapPkg = snapshotWanted()
         val ring = dp(28)
-        val step = dp(6).coerceAtLeast(1)
+        val step = dp(4).coerceAtLeast(1)
 
         runCatching {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
@@ -729,7 +729,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                             val full = Bitmap.wrapHardwareBuffer(hb, result.colorSpace) ?: return@runCatching
                             val soft = full.copy(Bitmap.Config.ARGB_8888, false)
                             full.recycle()
-                            val tones = capsuleRects.map { (i, r) -> Triple(i, averageAround(soft, r, ring, step), 0) }
+                            val tones = capsuleRects.map { (i, r) -> i to zonesAround(soft, r, ring, step) }
                             val tabTone = tabR?.let { averageAround(soft, it, ring, step) }
                             val picture = snapPkg?.let { pkg ->
                                 val w = 540
@@ -739,7 +739,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                             }
                             soft.recycle()
                             main.post {
-                                tones.forEach { (i, avg, _) -> avg?.let { (colour, lum) -> capsules.getOrNull(i)?.adaptTo(colour, lum) } }
+                                tones.forEach { (i, z) -> capsules.getOrNull(i)?.adaptTo(z) }
                                 tabTone?.let { (_, lum) -> tab?.setBackdropLight(lum > 0.5f) }
                                 picture?.let { (pkg, bmp) -> snapshots[pkg] = bmp; snapshotAt[pkg] = SystemClock.uptimeMillis() }
                             }
@@ -757,6 +757,45 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             if (!loggedShotFailure) EventLog.add(this, "Screen reading unavailable (${it.javaClass.simpleName}): turn Fold Taskbar off and on in Accessibility to grant it")
             loggedShotFailure = true
         }
+    }
+
+    /**
+     * The colour behind each stretch of a capsule: the capsule is cut into [ZONES] equal
+     * slices along its length, and for each slice the screen just beyond its two long
+     * edges is averaged. So each part of the bar answers to what is right next to it.
+     */
+    private fun zonesAround(b: Bitmap, r: Rect, ring: Int, step: Int): List<Pair<Int, Float>?> {
+        val upright = r.height() > r.width()
+        return (0 until ZONES).map { z ->
+            val slice = if (upright) {
+                val t = r.top + r.height() * z / ZONES; val btm = r.top + r.height() * (z + 1) / ZONES
+                Rect(r.left - ring, t, r.right + ring, btm)
+            } else {
+                val l = r.left + r.width() * z / ZONES; val rt = r.left + r.width() * (z + 1) / ZONES
+                Rect(l, r.top - ring, rt, r.bottom + ring)
+            }
+            averageIn(b, slice, r, step)
+        }
+    }
+
+    private fun averageIn(b: Bitmap, area: Rect, skip: Rect, step: Int): Pair<Int, Float>? {
+        if (!area.intersect(0, 0, b.width, b.height)) return null
+        var rs = 0L; var gs = 0L; var bs = 0L; var n = 0
+        var y = area.top
+        while (y < area.bottom) {
+            var x = area.left
+            while (x < area.right) {
+                if (!skip.contains(x, y)) {
+                    val p = b.getPixel(x, y)
+                    rs += (p shr 16) and 255; gs += (p shr 8) and 255; bs += p and 255; n++
+                }
+                x += step
+            }
+            y += step
+        }
+        if (n == 0) return null
+        val rr = (rs / n).toInt(); val gg = (gs / n).toInt(); val bb = (bs / n).toInt()
+        return ((rr shl 16) or (gg shl 8) or bb) to (0.2126f * rr + 0.7152f * gg + 0.0722f * bb) / 255f
     }
 
     /** Average colour and brightness of the band around [r], not including [r] itself. */
@@ -1039,39 +1078,66 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     /**
-     * Splits the screen between [left] and [right]. The way the left half is filled is
-     * learnt: each attempt is checked, and if One UI did not keep both apps on screen the
-     * next way is used next time. The last resort is two pop-ups side by side.
+     * Splits the screen between [first] (left or top) and [second] (right or bottom).
+     *
+     * One UI keeps the real controls for split screen to itself, so there are four ways,
+     * learnt in turn: each attempt is checked, and if both apps did not end up on screen
+     * the next way is used next time.
+     * 1. Samsung's own split-screen shortcut, then the second app into the free half.
+     * 2. The stepping stone, opening the first app as a fresh window in its half.
+     * 3. The stepping stone, relaunching the first app.
+     * 4. The second app as a pop-up filling its half, over the first: not a true split,
+     *    but tidy and dependable.
+     * Settings has a button to start learning again.
      */
-    private fun startSplit(left: android.content.ComponentName?, right: android.content.ComponentName) {
-        val method = if (left == null) 0 else Prefs.handover(this) % SplitActivity.HANDOVERS.size
-        if (left != null && method == 3) {
-            val s = screen(); val g = dp(4)
-            apps.openPopupAt(left.packageName, Rect(0, statusInset(), s.width() / 2 - g, s.height() - navInset()))
-            main.postDelayed({
-                apps.openPopupAt(right.packageName, Rect(s.width() / 2 + g, statusInset(), s.width(), s.height() - navInset()))
-            }, 250)
-        } else {
-            runCatching { startActivity(SplitActivity.intent(this, left, right, method)) }
-                .onFailure { EventLog.add(this, "Split: could not start (${it.javaClass.simpleName})") }
+    private fun startSplit(first: android.content.ComponentName?, second: android.content.ComponentName, secondIsNew: Boolean = true) {
+        val method = if (first == null) 1 else Prefs.handover(this) % SPLIT_METHODS.size
+        val s = screen()
+        when (method) {
+            0 -> {
+                // The app on screen is docked by Samsung; the other comes into the free half
+                val onScreenNow = onScreen.firstOrNull()
+                val keep = if (onScreenNow == second.packageName) second else first!!
+                val add = if (keep == second) first!! else second
+                if (onScreenNow != keep.packageName) apps.open(keep.packageName)
+                main.postDelayed({
+                    val ok = performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
+                    EventLog.add(this, "Split: Samsung shortcut ${if (ok) "accepted" else "refused"}")
+                    main.postDelayed({ apps.open(add.packageName) }, 750)
+                }, if (onScreenNow != keep.packageName) 700 else 0)
+            }
+            1, 2 -> runCatching {
+                startActivity(SplitActivity.intent(this, first, second, if (method == 1) 1 else 0, picker = first == null))
+            }.onFailure { EventLog.add(this, "Split: could not start (${it.javaClass.simpleName})") }
+            else -> {
+                // Pop-up filling the second half, over the first app
+                val f = first!!
+                if (onScreen.firstOrNull() != f.packageName) apps.open(f.packageName)
+                val portrait = s.height() > s.width() * 1.15f
+                val g = dp(4)
+                val half = if (portrait) Rect(0, s.height() / 2 + g, s.width(), s.height() - navInset())
+                else Rect(s.width() / 2 + g, statusInset(), s.width(), s.height() - navInset())
+                main.postDelayed({ apps.openPopupAt(second.packageName, half) }, if (onScreen.firstOrNull() != f.packageName) 500L else 0L)
+            }
         }
+        if (first == null) return
         main.postDelayed({
             bg.post {
                 scanWindows()
                 val seen = onScreen
                 main.post {
                     val names = seen.joinToString(" + ") { apps.entry(it)?.label ?: it }
-                    val ok = right.packageName in seen && (left == null || left.packageName in seen)
+                    val ok = second.packageName in seen && first.packageName in seen
                     if (ok) {
-                        EventLog.add(this, "Split worked (${SplitActivity.HANDOVERS[method]}): $names")
-                    } else if (left != null) {
-                        val next = (method + 1) % SplitActivity.HANDOVERS.size
+                        EventLog.add(this, "Split worked (${SPLIT_METHODS[method]}): $names")
+                    } else {
+                        val next = (method + 1).coerceAtMost(SPLIT_METHODS.lastIndex)
                         Prefs.setHandover(this, next)
-                        EventLog.add(this, "Split did not hold (${SplitActivity.HANDOVERS[method]}; on screen: $names). Next time: ${SplitActivity.HANDOVERS[next]}")
+                        EventLog.add(this, "Split did not hold (${SPLIT_METHODS[method]}; on screen: $names). Next time: ${SPLIT_METHODS[next]}")
                     }
                 }
             }
-        }, 2600)
+        }, 2800)
     }
 
     // ---- Dragging an app out of the bar --------------------------------------------
@@ -1121,8 +1187,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val otherComp = other?.let { apps.entry(it)?.component }
         when (zone) {
             // Left or top: the dragged app comes first. Right or bottom: second.
-            Drop.LEFT, Drop.TOP -> if (otherComp != null) startSplit(dragged, otherComp) else apps.open(pkg)
-            Drop.RIGHT, Drop.BOTTOM -> if (otherComp != null) startSplit(otherComp, dragged) else apps.open(pkg)
+            Drop.LEFT, Drop.TOP -> if (otherComp != null) startSplit(dragged, otherComp) else startSplit(null, dragged)
+            Drop.RIGHT, Drop.BOTTOM -> if (otherComp != null) startSplit(otherComp, dragged) else startSplit(null, dragged)
             Drop.POPUP -> {
                 val (px, py) = point ?: (screen().exactCenterX() to screen().exactCenterY())
                 apps.openPopup(pkg, screen(), px.toInt(), py.toInt())
@@ -1233,5 +1299,6 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     companion object {
         @Volatile var running = false
         private const val SAMPLE_EVERY_MS = 2000L
+        val SPLIT_METHODS = listOf("Samsung split shortcut", "fresh window", "relaunch", "pop-up in the half")
     }
 }
