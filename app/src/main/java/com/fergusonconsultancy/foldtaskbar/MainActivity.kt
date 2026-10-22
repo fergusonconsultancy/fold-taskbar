@@ -85,12 +85,22 @@ class MainActivity : Activity() {
         })
         root.addView(choice({
             val pack = Prefs.iconPack(this)
-            "Icons: " + (IconPack.installed(this).firstOrNull { it.first == pack }?.second ?: pack ?: "the phone's own")
+            val packs = IconPack.installed(this)
+            when {
+                pack != null -> "Icons: " + (packs.firstOrNull { it.first == pack }?.second ?: pack)
+                packs.isEmpty() && IconPack.studioInstalled(this) -> "Icons: the phone's own (export your Icon Pack Studio pack first, see below)"
+                else -> "Icons: the phone's own"
+            }
         }) {
             val options = listOf<String?>(null) + IconPack.installed(this).map { it.first }
             val now = options.indexOf(Prefs.iconPack(this)).coerceAtLeast(0)
             Prefs.setIconPack(this, options[(now + 1) % options.size])
         })
+        root.addView(note(
+            "Icon Pack Studio keeps the packs you design inside itself; only Smart Launcher reads them there. " +
+                "For any other app to use one, install it as its own app: in Icon Pack Studio, open your pack and use its " +
+                "export or install option, which needs the free Icon Pack Studio Exporter. Once installed, Fold Taskbar picks it up on its own."
+        ))
         root.addView(choice({ "Recent apps shown: ${Prefs.recentCount(this)}" }) {
             val all = Prefs.RECENT_COUNTS
             Prefs.setRecentCount(this, all[(all.indexOf(Prefs.recentCount(this)) + 1) % all.size])
@@ -155,8 +165,8 @@ class MainActivity : Activity() {
                     else -> "Taskbar: off. Follow the two steps below."
                 }
             )
-            append("App switching: ")
-            append(Prefs.motion(this@MainActivity).name.lowercase())
+            appendLine("App switching: " + Prefs.motion(this@MainActivity).name.lowercase())
+            append("Version " + runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrDefault("?"))
         }
         choiceButtons.forEach { (b, label) -> b.text = label() }
         logText.text = EventLog.read(this)

@@ -52,6 +52,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private var barOn = false
     private var menuWindow: View? = null
     private lateinit var drawer: AppDrawer
+    private lateinit var pour: Pour
     private var lastIconSummary: String? = null
 
     /** Picking the second app of a new pair from the grid. */
@@ -100,6 +101,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         getSystemService(android.hardware.SensorManager::class.java)?.let { sm ->
             sm.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE)?.let { sm.registerListener(this, it, android.hardware.SensorManager.SENSOR_DELAY_UI, main) }
         }
+        pour = Pour(this, wm)
         drawer = AppDrawer(this, wm, apps, onOpenApp = { pkg, v -> fromGrid(pkg, v) }, onHoldApp = { pkg, v -> openMenu(pkg, v) }, drag = this)
         // The bar now stays on the home screen too; only system surfaces such as the
         // notification shade push it aside.
@@ -245,6 +247,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         hosts.forEach { it.animate().cancel(); it.tag = null; it.visibility = View.GONE; it.alpha = 1f }
         closeMenu()
         if (::drawer.isInitialized) drawer.close(animated = false)
+        if (::pour.isInitialized) pour.cancel()
         guide.end()
         removeStrips()
         removeTab()
@@ -706,7 +709,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** The app to picture for Zoom: alone on screen for a moment, not pictured recently. */
     private fun snapshotWanted(): String? {
-        if (Prefs.motion(this) != Motion.ZOOM) return null
+        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.POUR)) return null
         val front = onScreen.singleOrNull()?.takeIf { it !in noRecents && it != packageName } ?: return null
         val now = SystemClock.uptimeMillis()
         if (now - frontSince < 900) return null
@@ -989,6 +992,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private fun removeBar() {
         removeStrips()
         if (::drawer.isInitialized) drawer.detach()
+        if (::pour.isInitialized) pour.detach()
         hosts.forEach(::remove); hosts.clear(); capsules.clear()
     }
 
@@ -1003,7 +1007,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
         // Launch first, on this frame; the motion is the app's own window moving
-        apps.open(pkg, source, snapshots[pkg])
+        val pic = snapshots[pkg]
+        apps.open(pkg, source, pic)
+        if (Prefs.motion(this) == Motion.POUR && source != null && source.isAttachedToWindow && isMainScreen()) {
+            runCatching { pour.play(source, screen(), pic, apps.icon(pkg)) }
+                .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }
+        }
         closePanels()
         if (Prefs.autoHide(this) && revealed) {
             main.removeCallbacks(autoHideNow)
@@ -1515,7 +1524,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             val summary = apps.iconSummary()
             main.post {
                 drawer.refreshApps()
-                if (summary != lastIconSummary) { lastIconSummary = summary; EventLog.add(this, "Icons: $summary") }
+                if (summary != lastIconSummary) {
+                    // A pack arrived or left: redraw the bar with the new icons
+                    if (lastIconSummary != null) { layoutKey = ""; main.removeCallbacks(applyNow); main.post(applyNow) }
+                    lastIconSummary = summary
+                    EventLog.add(this, "Icons: $summary")
+                }
             }
         }
     }
@@ -1534,7 +1548,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val offset = if (fromTop) (cy + hostH / 2f - dp(10) + dp(12)).toInt()
         else (s.height() - (cy - hostH / 2f + dp(10)) + dp(12)).toInt()
         val room = if (fromTop) s.height() - offset - navInset() - dp(12) else s.height() - offset - statusInset() - dp(12)
-        drawer.attach(Prefs.finish(this), w, minOf(h, room).coerceAtLeast(dp(240)), offset, fromTop)
+        val rebuilt = drawer.attach(Prefs.finish(this), w, minOf(h, room).coerceAtLeast(dp(240)), offset, fromTop)
+        // The pour sits above the grid, so an app opened from the grid swells over it
+        if (rebuilt) pour.detach()
+        pour.ensure()
     }
 
     @SuppressLint("ClickableViewAccessibility")

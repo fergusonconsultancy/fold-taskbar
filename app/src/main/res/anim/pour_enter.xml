@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The live app fades in beneath the pour, so the melt lands on it -->
+<alpha xmlns:android="http://schemas.android.com/apk/res/android"
+    android:fromAlpha="0" android:toAlpha="1"
+    android:startOffset="260" android:duration="180"
+    android:interpolator="@android:interpolator/linear" />

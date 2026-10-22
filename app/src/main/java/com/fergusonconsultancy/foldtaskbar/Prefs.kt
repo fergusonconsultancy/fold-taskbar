@@ -8,6 +8,7 @@ import android.content.SharedPreferences
  * reserved for the system (Depth asked for it, and One UI refused).
  */
 enum class Motion(val label: String) {
+    POUR("Pour: the app swells out of its icon like syrup (drawn by the bar)"),
     ZOOM("Zoom: the app's last screen grows out of its icon"),
     REVEAL("Reveal: the app opens out from its icon"),
     GROW("Grow: the app scales up from its icon"),
@@ -84,17 +85,19 @@ object Prefs {
 
     /**
      * The icon pack whose icons the bar and grid use: a package name, or null for the
-     * phone's own icons. Until chosen, Icon Pack Studio is used if it is installed.
+     * phone's own icons. Until chosen, the first icon pack installed on the phone.
      */
     fun iconPack(c: Context): String? {
         val v = of(c).getString(ICON_PACK, null)
-        if (v != null) return v.ifEmpty { null }
-        return runCatching { c.packageManager.getApplicationInfo(IconPack.ICON_PACK_STUDIO, 0); IconPack.ICON_PACK_STUDIO }.getOrNull()
+        if (v == "") return null
+        val packs = IconPack.installed(c).map { it.first }
+        // A chosen pack that is still installed; otherwise the first pack on the phone
+        return v?.takeIf { it in packs } ?: packs.firstOrNull()
     }
     fun setIconPack(c: Context, v: String?) = of(c).edit().putString(ICON_PACK, v ?: "").apply()
     const val ICON_PACK = "icon_pack"
 
-    fun motion(c: Context) = runCatching { Motion.valueOf(of(c).getString(MOTION, null)!!) }.getOrDefault(Motion.ZOOM)
+    fun motion(c: Context) = runCatching { Motion.valueOf(of(c).getString(MOTION, null)!!) }.getOrDefault(Motion.POUR)
     fun setMotion(c: Context, v: Motion) = of(c).edit().putString(MOTION, v.name).apply()
 
     /** Which way of filling the left half of a split last worked (see SplitActivity). */

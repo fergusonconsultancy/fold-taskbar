@@ -154,9 +154,9 @@ class AppDrawer(
 
     /** Builds the windows for this size and finish. Cheap to call: does nothing if unchanged. */
     /** [fromTop] places the grid below a bar near the top; otherwise above a bar near the bottom. */
-    fun attach(finish: Finish, widthPx: Int, heightPx: Int, offsetPx: Int, fromTop: Boolean) {
+    fun attach(finish: Finish, widthPx: Int, heightPx: Int, offsetPx: Int, fromTop: Boolean): Boolean {
         val k = "$finish|$widthPx|$heightPx|$offsetPx|$fromTop"
-        if (k == key && panelHost != null) return
+        if (k == key && panelHost != null) return false
         detach()
         key = k
         this.fromTop = fromTop
@@ -196,20 +196,23 @@ class AppDrawer(
             }.also { title = it })
             addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
-        val inset = context.dp(10)
+        panel?.isClickable = true
+        // The liquid spans the whole screen, so it can rise out of the grid button itself
+        // and drain back into it, wherever the bar sits.
         liquid = LiquidPanel(finish).apply {
-            setPadding(inset, inset, inset, inset)
-            addView(panel, FrameLayout.LayoutParams(widthPx, heightPx))
+            addView(panel, FrameLayout.LayoutParams(widthPx, heightPx,
+                (if (fromTop) Gravity.TOP else Gravity.BOTTOM) or Gravity.CENTER_HORIZONTAL).apply {
+                if (fromTop) topMargin = offsetPx else bottomMargin = offsetPx
+            })
+            setOnClickListener { close() }
         }
         panelHost = FrameLayout(context).apply {
-            clipChildren = false
-            clipToPadding = false
-            addView(liquid)
+            addView(liquid, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             visibility = View.INVISIBLE
         }
-        wm.addView(panelHost, params(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            (if (fromTop) Gravity.TOP else Gravity.BOTTOM) or Gravity.CENTER_HORIZONTAL, offsetPx - context.dp(10)))
+        wm.addView(panelHost, params(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, Gravity.TOP, 0))
         adapter?.submit(apps.all())
+        return true
     }
 
     fun detach() {
@@ -326,18 +329,21 @@ class AppDrawer(
         }
     }
 
-    /** Where the pour begins: a drop the width of the grid button, at the panel's near edge. */
+    /**
+     * Where the pour begins: the grid button itself, as a round drop sitting exactly over it.
+     * Without a button on screen, a drop at the middle of the panel's near edge.
+     */
     private fun originRect(l: View, from: View?): android.graphics.RectF {
-        val w = l.width.toFloat(); val h = l.height.toFloat()
-        val size = from?.width?.toFloat()?.takeIf { it > 0 } ?: context.dp(44).toFloat()
-        val cx = from?.takeIf { it.isAttachedToWindow }?.let {
-            val a = IntArray(2).also { p -> it.getLocationOnScreen(p) }
-            val b = IntArray(2).also { p -> l.getLocationOnScreen(p) }
-            (a[0] + it.width / 2f - b[0]).coerceIn(size / 2, w - size / 2)
-        } ?: (w / 2)
-        val pad = (l as? LiquidPanel)?.inset ?: 0f
-        return if (fromTop) android.graphics.RectF(cx - size / 2, pad, cx + size / 2, pad + size)
-        else android.graphics.RectF(cx - size / 2, h - pad - size, cx + size / 2, h - pad)
+        from?.takeIf { it.isAttachedToWindow && it.width > 0 }?.let { b ->
+            val r = rectOf(l, b)
+            val d = minOf(r.width(), r.height())
+            return android.graphics.RectF(r.centerX() - d / 2, r.centerY() - d / 2, r.centerX() + d / 2, r.centerY() + d / 2)
+        }
+        val p = panel ?: return android.graphics.RectF()
+        val size = context.dp(44).toFloat()
+        val cx = (p.left + p.right) / 2f
+        return if (fromTop) android.graphics.RectF(cx - size / 2, p.top.toFloat(), cx + size / 2, p.top + size)
+        else android.graphics.RectF(cx - size / 2, p.bottom - size, cx + size / 2, p.bottom.toFloat())
     }
 
     private fun rectOf(l: View, v: View): android.graphics.RectF {
@@ -358,6 +364,7 @@ class AppDrawer(
         var progress = 1f
         val inset = context.dp(10).toFloat()
         private val path = android.graphics.Path()
+        private val extra = android.graphics.Path()
         private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = finish.fill }
         private val edge = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             style = android.graphics.Paint.Style.STROKE; color = finish.edge; strokeWidth = context.dp(1).toFloat()
@@ -369,7 +376,8 @@ class AppDrawer(
         init { setWillNotDraw(false); clipChildren = true }
 
         override fun dispatchDraw(canvas: Canvas) {
-            val full = android.graphics.RectF(inset, inset, width - inset, height - inset)
+            val p = getChildAt(0) ?: return
+            val full = android.graphics.RectF(p.left.toFloat(), p.top.toFloat(), p.right.toFloat(), p.bottom.toFloat())
             val t = progress.coerceIn(0f, 1f)
             // Far edge leads on a spring; the sides follow a beat behind
             val lead = surge.getInterpolation((t / 0.8f).coerceAtMost(1f))
@@ -387,17 +395,31 @@ class AppDrawer(
 
             path.reset()
             path.addRoundRect(r, radius, radius, android.graphics.Path.Direction.CW)
-            // The neck back to the drop, thinning as the panel fills out
-            val neck = (1f - spread) * origin.width() * 0.5f
-            if (neck > 1f && t < 1f) {
-                val cx = origin.centerX()
+            // The drop on the grid button empties into the panel through a pinched neck,
+            // and fills again when the panel drains back into it
+            val left = 1f - spread
+            if (left > 0.02f && t < 1f) {
+                val cx = origin.centerX(); val cy = origin.centerY()
+                val drop = origin.width() / 2f * (0.35f + 0.65f * left)
+                extra.reset()
+                extra.addCircle(cx, cy, drop, android.graphics.Path.Direction.CW)
+                path.op(extra, android.graphics.Path.Op.UNION)
+                extra.reset()
                 val nearY = if (fromTop) r.top else r.bottom
-                val dropY = if (fromTop) origin.top else origin.bottom
-                path.moveTo(cx - neck, nearY)
-                path.quadTo(cx - neck * 0.4f, (nearY + dropY) / 2, cx - origin.width() / 2, dropY)
-                path.lineTo(cx + origin.width() / 2, dropY)
-                path.quadTo(cx + neck * 0.4f, (nearY + dropY) / 2, cx + neck, nearY)
-                path.close()
+                val gapping = if (fromTop) nearY < cy else nearY > cy
+                if (!gapping) {
+                    val top = origin.width() * 0.5f * left
+                    val foot = drop * 0.8f
+                    val waist = minOf(top, foot) * 0.45f
+                    val midY = (nearY + cy) / 2f
+                    extra.moveTo(cx - top, nearY)
+                    extra.quadTo(cx - waist, midY, cx - foot, cy)
+                    extra.lineTo(cx + foot, cy)
+                    extra.quadTo(cx + waist, midY, cx + top, nearY)
+                    extra.close()
+                }
+                // Joined as one body, so the overlaps never cancel out
+                path.op(extra, android.graphics.Path.Op.UNION)
             }
             canvas.save(); canvas.translate(0f, context.dp(3).toFloat()); canvas.drawPath(path, shade); canvas.restore()
             canvas.drawPath(path, fill)

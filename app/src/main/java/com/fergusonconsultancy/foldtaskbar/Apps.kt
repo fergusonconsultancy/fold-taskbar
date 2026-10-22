@@ -62,9 +62,21 @@ class Apps(private val context: Context) {
     }
 
     /** For the event log: which icons are in use. */
-    fun iconSummary(): String = pack()?.let { "${it.pkg} (${it.size} icons in the pack)" } ?: "the phone's own icons"
+    fun iconSummary(): String {
+        val packs = IconPack.installed(context)
+        val p = pack()
+        if (p != null) {
+            val label = packs.firstOrNull { it.first == p.pkg }?.second ?: p.pkg
+            return "$label, ${p.size} icons" + (if (p.size == 0) ". The pack has no icon list Fold Taskbar can read" else "") +
+                (if (packs.size > 1) ". Packs on the phone: ${packs.joinToString { it.second }}" else "")
+        }
+        if (packs.isNotEmpty()) return "the phone's own (chosen in settings). Packs on the phone: ${packs.joinToString { it.second }}"
+        return if (IconPack.studioInstalled(context))
+            "the phone's own. Icon Pack Studio is installed but none of its packs are exported, so other apps cannot see them yet"
+        else "the phone's own. No icon packs installed"
+    }
 
-    fun forget() { icons.clear(); entries.clear(); allCache = null; packLoaded = false }
+    fun forget() { icons.clear(); entries.clear(); allCache = null; packLoaded = false; IconPack.forgetInstalled() }
 
     fun onPackagesChanged(listener: () -> Unit) {
         launcher.registerCallback(object : LauncherApps.Callback() {
@@ -117,6 +129,7 @@ class Apps(private val context: Context) {
     private fun motionOptions(v: android.view.View, motion: Motion, snapshot: android.graphics.Bitmap?): ActivityOptions? {
         if (motion in refused) return null
         return when (motion) {
+            Motion.POUR -> ActivityOptions.makeCustomAnimation(context, R.anim.pour_enter, R.anim.pour_hold)
             Motion.ZOOM -> if (snapshot != null) {
                 val tw = (v.width * 2.6f).toInt().coerceAtLeast(1)
                 val th = (tw * snapshot.height / snapshot.width.toFloat()).toInt().coerceAtLeast(1)

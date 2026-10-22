@@ -118,24 +118,42 @@ class IconPack(private val context: Context, val pkg: String) {
     }
 
     companion object {
+        /** Icon Pack Studio itself: the editor, not a pack. Its packs reach other apps only once exported. */
         const val ICON_PACK_STUDIO = "ginlemon.iconpackstudio"
 
-        /** Installed icon packs, Icon Pack Studio first, as package name to label. */
+        private val ACTIONS = listOf(
+            "org.adw.launcher.THEMES", "com.novalauncher.THEME", "com.gau.go.launcherex.theme",
+            "com.anddoes.launcher.THEME", "com.teslacoilsw.launcher.THEME", "com.dlto.atom.launcher.THEME",
+            "org.adw.launcher.icons.ACTION_PICK_ICON", "ginlemon.smartlauncher.THEMES",
+        )
+        private val CATEGORIES = listOf(
+            "com.fede.launcher.THEME_ICONPACK", "com.anddoes.launcher.THEME", "com.teslacoilsw.launcher.THEME",
+        )
+
+        @Volatile private var cache: Pair<Long, List<Pair<String, String>>>? = null
+
+        /** Installed icon packs in the standard format, as package name to label. */
         fun installed(context: Context): List<Pair<String, String>> {
+            cache?.let { (at, list) -> if (android.os.SystemClock.uptimeMillis() - at < 20_000) return list }
             val pm = context.packageManager
             val found = linkedMapOf<String, String>()
-            runCatching {
-                pm.getApplicationInfo(ICON_PACK_STUDIO, 0)
-                found[ICON_PACK_STUDIO] = "Icon Pack Studio"
-            }
-            listOf("org.adw.launcher.THEMES", "com.novalauncher.THEME", "com.gau.go.launcherex.theme",
-                "com.anddoes.launcher.THEME", "com.teslacoilsw.launcher.THEME").forEach { action ->
-                pm.queryIntentActivities(Intent(action), 0).forEach { r ->
+            val intents = ACTIONS.map { Intent(it) } +
+                CATEGORIES.map { Intent(Intent.ACTION_MAIN).addCategory(it) }
+            intents.forEach { intent ->
+                runCatching { pm.queryIntentActivities(intent, 0) }.getOrNull()?.forEach { r ->
                     val p = r.activityInfo.packageName
-                    if (p !in found) found[p] = r.loadLabel(pm).toString()
+                    if (p != ICON_PACK_STUDIO && p != context.packageName && p !in found) {
+                        found[p] = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(p, 0)).toString() }
+                            .getOrDefault(r.loadLabel(pm).toString())
+                    }
                 }
             }
-            return found.map { it.key to it.value }
+            return found.map { it.key to it.value }.also { cache = android.os.SystemClock.uptimeMillis() to it }
         }
+
+        fun forgetInstalled() { cache = null }
+
+        fun studioInstalled(context: Context) =
+            runCatching { context.packageManager.getApplicationInfo(ICON_PACK_STUDIO, 0) }.isSuccess
     }
 }
