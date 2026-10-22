@@ -36,6 +36,7 @@
             android:excludeFromRecents="true"
             android:taskAffinity=""
             android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode"
             android:theme="@style/Crease" />
 
         <service

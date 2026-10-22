@@ -44,6 +44,14 @@ class SplitActivity : Activity() {
         @Suppress("DEPRECATION") left = intent.getParcelableExtra(EXTRA_LEFT)
         method = intent.getIntExtra(EXTRA_METHOD, 0)
         val r = right ?: run { finish(); return }
+        if (savedInstanceState != null) {
+            // Rebuilt by Android after the split formed: carry on, never ask a second time
+            asked = true
+            setContentView(View(this).apply { setBackgroundColor(0xFF0E1311.toInt()) })
+            EventLog.add(this, "Split step 3: stepping stone resized into its half")
+            main.post { handleSplit(isInMultiWindowMode) }
+            return
+        }
         EventLog.add(this, "Split step 1: stepping stone open")
         val apps = Apps(this)
         setContentView(CreaseView(this, left?.let { apps.icon(it.packageName) }, apps.icon(r.packageName)))
@@ -60,6 +68,8 @@ class SplitActivity : Activity() {
             .onFailure { EventLog.add(this, "Split step 2 failed: ${it.javaClass.simpleName}"); finishQuietly() }
         // If the screen never splits, say so rather than leave you guessing
         main.postDelayed({
+            // The signal can be missed; what matters is whether this screen is now in a half
+            if (!handedOver && isInMultiWindowMode) { handleSplit(true); return@postDelayed }
             if (!handedOver) {
                 EventLog.add(this, "Split step 3: One UI did not split the screen (in split: $isInMultiWindowMode)")
                 finishQuietly()
@@ -158,6 +168,11 @@ class SplitActivity : Activity() {
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    override fun onResume() {
+        super.onResume()
+        if (asked && !handedOver && isInMultiWindowMode) handleSplit(true)
+    }
 
     private fun finishQuietly() {
         if (isFinishing) return
