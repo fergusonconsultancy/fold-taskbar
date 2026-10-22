@@ -12,7 +12,7 @@ import java.util.Locale
 object EventLog {
     private const val FILE = "fold_taskbar_log"
     private const val KEY = "event_log"
-    private const val MAX_LINES = 20
+    private const val MAX_LINES = 60
 
     @Synchronized
     fun add(context: Context, line: String) {

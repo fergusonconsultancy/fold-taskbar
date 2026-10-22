@@ -113,10 +113,14 @@ class MainActivity : Activity() {
         }
         root.addView(logText)
         root.addView(button("Clear log") { EventLog.clear(this); refresh() })
-        root.addView(button("Learn split screen again from the start") {
-            Prefs.setHandover(this, 0)
-            EventLog.add(this, "Split screen: starting again with the Samsung split shortcut")
-            refresh()
+        root.addView(button("Run the split-screen test") {
+            val svc = TaskbarService.instance
+            if (svc == null) {
+                EventLog.add(this, "Split test: switch the taskbar on first")
+                refresh()
+            } else {
+                svc.runSplitTest()
+            }
         })
 
         setContentView(ScrollView(this).apply {

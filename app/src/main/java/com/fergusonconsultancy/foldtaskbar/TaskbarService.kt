@@ -69,6 +69,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     @Volatile private var onScreen: List<String> = emptyList()
     /** Left edge of each app's window, to tell which side of a split each app is on. */
     @Volatile private var onScreenLeft: Map<String, Int> = emptyMap()
+    @Volatile private var onScreenBounds: Map<String, Rect> = emptyMap()
     @Volatile private var keyboardTop: Int? = null
     @Volatile private var systemInFront = false
     private var hidePackages: Set<String> = emptySet()
@@ -105,6 +106,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         Prefs.of(this).registerOnSharedPreferenceChangeListener(this)
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
         running = true
+        instance = this
         apps.onPackagesChanged { warmApps(rebuildList = true) }
         warmApps(rebuildList = false)
         EventLog.add(this, "Taskbar started. Home app: ${apps.homePackage() ?: "unknown"}")
@@ -113,6 +115,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     override fun onDestroy() {
         running = false
+        instance = null
         runCatching { getSystemService(android.hardware.SensorManager::class.java)?.unregisterListener(this) }
         runCatching { Prefs.of(this).unregisterOnSharedPreferenceChangeListener(this) }
         runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
@@ -168,6 +171,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val list = runCatching { windows }.getOrDefault(emptyList())
         val found = mutableListOf<String>()
         val lefts = HashMap<String, Int>()
+        val boxes = HashMap<String, Rect>()
         var imeTop: Int? = null
         var system = false
         val r = Rect()
@@ -178,14 +182,14 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 AccessibilityWindowInfo.TYPE_APPLICATION -> {
                     val pkg = runCatching { w.root?.packageName?.toString() }.getOrNull() ?: continue
                     if (w.isFocused) found.add(0, pkg) else found.add(pkg)
-                    w.getBoundsInScreen(r); lefts[pkg] = r.left
+                    w.getBoundsInScreen(r); lefts[pkg] = r.left; boxes[pkg] = Rect(r)
                 }
             }
         }
         keyboardTop = imeTop
         systemInFront = system
         // An empty list is a transition in progress, not a real state. Keep the last one.
-        if (found.isNotEmpty()) { onScreen = found.distinct(); onScreenLeft = lefts }
+        if (found.isNotEmpty()) { onScreen = found.distinct(); onScreenLeft = lefts; onScreenBounds = boxes }
     }
 
     private fun homePackages(): Set<String> =
@@ -1080,64 +1084,133 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     /**
      * Splits the screen between [first] (left or top) and [second] (right or bottom).
      *
-     * One UI keeps the real controls for split screen to itself, so there are four ways,
-     * learnt in turn: each attempt is checked, and if both apps did not end up on screen
-     * the next way is used next time.
-     * 1. Samsung's own split-screen shortcut, then the second app into the free half.
-     * 2. The stepping stone, opening the first app as a fresh window in its half.
-     * 3. The stepping stone, relaunching the first app.
-     * 4. The second app as a pop-up filling its half, over the first: not a true split,
-     *    but tidy and dependable.
-     * Settings has a button to start learning again.
+     * One UI keeps the real controls for split screen to itself. Three routes might still
+     * produce a true split; the split-screen test in settings tries each and keeps the one
+     * that works. If none does, the fallback is a pop-up filling the second half, which is
+     * reported honestly as a pop-up, never as a split.
      */
-    private fun startSplit(first: android.content.ComponentName?, second: android.content.ComponentName, secondIsNew: Boolean = true) {
-        val method = if (first == null) 1 else Prefs.handover(this) % SPLIT_METHODS.size
+    private var lastSplitAt = 0L
+
+    private fun startSplit(first: android.content.ComponentName?, second: android.content.ComponentName) {
+        // One drop, one attempt: a second request while the first is underway trips both up
+        val now = SystemClock.uptimeMillis()
+        if (now - lastSplitAt < 2500) return
+        lastSplitAt = now
+        val method = if (first == null) 1 else Prefs.handover(this).coerceIn(0, POPUP_FALLBACK)
+        attemptSplit(method, first, second)
+        if (first == null || method == POPUP_FALLBACK) return
+        judgeSplit(first.packageName, second.packageName, 2800) { ok, names ->
+            if (ok) EventLog.add(this, "True split (${SPLIT_METHODS[method]}): $names")
+            else EventLog.add(this, "No split (${SPLIT_METHODS[method]}; on screen: $names). Run the split-screen test in settings")
+        }
+    }
+
+    /** Carries out one route. */
+    private fun attemptSplit(method: Int, first: android.content.ComponentName?, second: android.content.ComponentName) {
         val s = screen()
         when (method) {
             0 -> {
                 // The app on screen is docked by Samsung; the other comes into the free half
-                val onScreenNow = onScreen.firstOrNull()
-                val keep = if (onScreenNow == second.packageName) second else first!!
-                val add = if (keep == second) first!! else second
-                if (onScreenNow != keep.packageName) apps.open(keep.packageName)
+                val f = first ?: return
+                if (onScreen.firstOrNull() != f.packageName) apps.open(f.packageName)
                 main.postDelayed({
                     val ok = performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
-                    EventLog.add(this, "Split: Samsung shortcut ${if (ok) "accepted" else "refused"}")
-                    main.postDelayed({ apps.open(add.packageName) }, 750)
-                }, if (onScreenNow != keep.packageName) 700 else 0)
+                    EventLog.add(this, "Samsung split shortcut ${if (ok) "accepted" else "refused"}")
+                    main.postDelayed({
+                        bg.post {
+                            scanWindows()
+                            val names = onScreen.joinToString(" + ") { apps.entry(it)?.label ?: it }
+                            main.post {
+                                EventLog.add(this, "After the shortcut, on screen: $names")
+                                apps.open(second.packageName)
+                            }
+                        }
+                    }, 900)
+                }, 900)
             }
             1, 2 -> runCatching {
                 startActivity(SplitActivity.intent(this, first, second, if (method == 1) 1 else 0, picker = first == null))
             }.onFailure { EventLog.add(this, "Split: could not start (${it.javaClass.simpleName})") }
             else -> {
-                // Pop-up filling the second half, over the first app
-                val f = first!!
+                val f = first ?: return
                 if (onScreen.firstOrNull() != f.packageName) apps.open(f.packageName)
                 val portrait = s.height() > s.width() * 1.15f
                 val g = dp(4)
                 val half = if (portrait) Rect(0, s.height() / 2 + g, s.width(), s.height() - navInset())
                 else Rect(s.width() / 2 + g, statusInset(), s.width(), s.height() - navInset())
-                main.postDelayed({ apps.openPopupAt(second.packageName, half) }, if (onScreen.firstOrNull() != f.packageName) 500L else 0L)
+                main.postDelayed({ apps.openPopupAt(second.packageName, half) }, 500)
+                EventLog.add(this, "Pop-up in the half: ${apps.entry(second.packageName)?.label} over ${apps.entry(f.packageName)?.label}")
             }
         }
-        if (first == null) return
+    }
+
+    /**
+     * A true split, not just two apps visible: both windows are on screen, each takes a
+     * real share of it, and they do not overlap (a pop-up overlaps the app beneath it).
+     */
+    private fun judgeSplit(a: String, b: String, after: Long, verdict: (Boolean, String) -> Unit) {
         main.postDelayed({
             bg.post {
                 scanWindows()
                 val seen = onScreen
+                val boxes = onScreenBounds
                 main.post {
                     val names = seen.joinToString(" + ") { apps.entry(it)?.label ?: it }
-                    val ok = second.packageName in seen && first.packageName in seen
-                    if (ok) {
-                        EventLog.add(this, "Split worked (${SPLIT_METHODS[method]}): $names")
-                    } else {
-                        val next = (method + 1).coerceAtMost(SPLIT_METHODS.lastIndex)
-                        Prefs.setHandover(this, next)
-                        EventLog.add(this, "Split did not hold (${SPLIT_METHODS[method]}; on screen: $names). Next time: ${SPLIT_METHODS[next]}")
-                    }
+                    val ra = boxes[a]; val rb = boxes[b]
+                    val s = screen()
+                    val area = s.width().toLong() * s.height()
+                    fun share(r: Rect) = r.width().toLong() * r.height() > area * 0.3
+                    val overlap = if (ra != null && rb != null) Rect(ra).let { it.intersect(rb) && it.width().toLong() * it.height() > area * 0.05 } else true
+                    verdict(ra != null && rb != null && share(ra) && share(rb) && !overlap, names)
                 }
             }
-        }, 2800)
+        }, after)
+    }
+
+    /**
+     * The split-screen test. With two of your recent apps, tries each route that could
+     * give a true split, returning home between tries, and records a plain verdict for
+     * each. The first route that works is kept; if none does, the pop-up fallback is kept
+     * and the log says so.
+     */
+    fun runSplitTest() {
+        val pick = (Prefs.tray(this) + Prefs.pinned(this) + Prefs.recents(this))
+            .distinct().filter { it != packageName && it !in noRecents && apps.isLaunchable(it) }.take(2)
+        if (pick.size < 2) { EventLog.add(this, "Split test: open two apps first so there are two to test with"); return }
+        val (a, b) = pick
+        val ca = apps.entry(a)?.component ?: return
+        val cb = apps.entry(b)?.component ?: return
+        EventLog.add(this, "Split test starting with ${apps.entry(a)?.label} + ${apps.entry(b)?.label}. Please don't touch the phone for about 30 seconds")
+        val results = arrayOfNulls<Boolean>(3)
+        fun step(m: Int) {
+            if (m > 2) {
+                val winner = results.indexOfFirst { it == true }
+                if (winner >= 0) {
+                    Prefs.setHandover(this, winner)
+                    EventLog.add(this, "Split test result: ${SPLIT_METHODS[winner]} gives a true split. Using it from now on")
+                } else {
+                    Prefs.setHandover(this, POPUP_FALLBACK)
+                    EventLog.add(this, "Split test result: One UI allowed no true split by any route. Using pop-up in the half")
+                }
+                performGlobalAction(GLOBAL_ACTION_HOME)
+                return
+            }
+            // Start each try from a clean screen with the first app full screen
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            main.postDelayed({
+                apps.open(a)
+                main.postDelayed({
+                    EventLog.add(this, "Split test ${m + 1} of 3: ${SPLIT_METHODS[m]}")
+                    attemptSplit(m, ca, cb)
+                    judgeSplit(a, b, if (m == 0) 4200 else 3200) { ok, names ->
+                        results[m] = ok
+                        EventLog.add(this, "Split test ${m + 1}: ${if (ok) "TRUE SPLIT" else "no split"} (on screen: $names)")
+                        step(m + 1)
+                    }
+                }, 1500)
+            }, 900)
+        }
+        step(0)
     }
 
     // ---- Dragging an app out of the bar --------------------------------------------
@@ -1298,7 +1371,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     companion object {
         @Volatile var running = false
+        @Volatile var instance: TaskbarService? = null
         private const val SAMPLE_EVERY_MS = 2000L
         val SPLIT_METHODS = listOf("Samsung split shortcut", "fresh window", "relaunch", "pop-up in the half")
+        const val POPUP_FALLBACK = 3
     }
 }
