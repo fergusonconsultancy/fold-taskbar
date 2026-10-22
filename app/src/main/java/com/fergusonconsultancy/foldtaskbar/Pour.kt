@@ -111,17 +111,22 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        val upward = from.centerY() > to.centerY()
         val a = lead.getInterpolation(t)
         val b = follow.getInterpolation(((t - 0.06f) / 0.94f).coerceIn(0f, 1f))
         val c = trail.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
-        // The far edge leads, the sides follow, the near edge lets go last
-        if (upward) {
-            r.top = mix(from.top, to.top, a); r.bottom = mix(from.bottom, to.bottom, c)
+        // The far edge leads, the sides follow, the near edge lets go last. A bar lying at
+        // the top or bottom pours vertically; a bar standing at a side pours across.
+        val dx = to.centerX() - from.centerX(); val dy = to.centerY() - from.centerY()
+        val across = kotlin.math.abs(dx) / to.width().coerceAtLeast(1f) > kotlin.math.abs(dy) / to.height().coerceAtLeast(1f)
+        if (!across) {
+            if (dy < 0) { r.top = mix(from.top, to.top, a); r.bottom = mix(from.bottom, to.bottom, c) }
+            else { r.bottom = mix(from.bottom, to.bottom, a); r.top = mix(from.top, to.top, c) }
+            r.left = mix(from.left, to.left, b); r.right = mix(from.right, to.right, b)
         } else {
-            r.bottom = mix(from.bottom, to.bottom, a); r.top = mix(from.top, to.top, c)
+            if (dx < 0) { r.left = mix(from.left, to.left, a); r.right = mix(from.right, to.right, c) }
+            else { r.right = mix(from.right, to.right, a); r.left = mix(from.left, to.left, c) }
+            r.top = mix(from.top, to.top, b); r.bottom = mix(from.bottom, to.bottom, b)
         }
-        r.left = mix(from.left, to.left, b); r.right = mix(from.right, to.right, b)
         val radius = mix(from.width() * 0.32f, context.dp(30).toFloat(), b)
 
         path.reset()

@@ -1534,21 +1534,51 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         }
     }
 
-    /** Attaches the grid's windows next to wherever the grid button's capsule sits. */
+    /**
+     * Attaches the grid's windows beside wherever the grid button's capsule sits, opening
+     * towards the most room: above or below a lying bar, left or right of a standing one.
+     * The panel lines up with the button along the bar, kept clear of the screen's edges.
+     */
     private fun attachDrawer() {
         if (!::drawer.isInitialized) return
         val s = screen()
-        val w = minOf((s.width() * 0.8f).toInt(), dp(760))
-        val h = (s.height() * 0.6f).toInt()
         val spot = spotFor(Prefs.shape(this), 0)
         val host = hosts.firstOrNull()
-        val hostH = host?.let { hostSize(it).second } ?: dp(Prefs.iconDp(this) + 42)
-        val cy = spot.fy * s.height()
-        val fromTop = cy < s.height() / 2f
-        val offset = if (fromTop) (cy + hostH / 2f - dp(10) + dp(12)).toInt()
-        else (s.height() - (cy - hostH / 2f + dp(10)) + dp(12)).toInt()
-        val room = if (fromTop) s.height() - offset - navInset() - dp(12) else s.height() - offset - statusInset() - dp(12)
-        val rebuilt = drawer.attach(Prefs.finish(this), w, minOf(h, room).coerceAtLeast(dp(240)), offset, fromTop)
+        val (bw, bh) = host?.let { hostSize(it) } ?: (dp(Prefs.iconDp(this) + 42) to dp(Prefs.iconDp(this) + 42))
+        val cx = spot.fx * s.width(); val cy = spot.fy * s.height()
+        val bar = android.graphics.RectF(cx - bw / 2f, cy - bh / 2f, cx + bw / 2f, cy + bh / 2f)
+        val gap = dp(2).toFloat()   // the capsule's window already carries ~10 dp of clear space
+        val margin = dp(12)
+        val top = statusInset() + margin
+        val bottom = s.height() - navInset() - margin
+        val roomAbove = bar.top - gap - top
+        val roomBelow = bottom - (bar.bottom + gap)
+        val roomLeft = bar.left - gap - margin
+        val roomRight = s.width() - margin - (bar.right + gap)
+        val side = if (spot.vertical) {
+            if (roomRight >= roomLeft) AppDrawer.Side.LEFT else AppDrawer.Side.RIGHT
+        } else {
+            if (roomAbove >= roomBelow) AppDrawer.Side.BOTTOM else AppDrawer.Side.TOP
+        }
+        val rect = when (side) {
+            AppDrawer.Side.BOTTOM, AppDrawer.Side.TOP -> {
+                val w = minOf((s.width() * 0.8f).toInt(), dp(760))
+                val room = if (side == AppDrawer.Side.BOTTOM) roomAbove else roomBelow
+                val h = minOf((s.height() * 0.6f).toInt(), room.toInt()).coerceAtLeast(dp(240))
+                val l = (cx - w / 2f).toInt().coerceIn(margin, (s.width() - w - margin).coerceAtLeast(margin))
+                val t = if (side == AppDrawer.Side.BOTTOM) (bar.top - gap - h).toInt() else (bar.bottom + gap).toInt()
+                Rect(l, t, l + w, t + h)
+            }
+            else -> {
+                val room = if (side == AppDrawer.Side.LEFT) roomRight else roomLeft
+                val w = minOf(room.toInt(), dp(760), (s.width() * 0.8f).toInt()).coerceAtLeast(dp(300))
+                val h = minOf((s.height() * 0.78f).toInt(), bottom - top).coerceAtLeast(dp(240))
+                val t = (cy - h / 2f).toInt().coerceIn(top, (bottom - h).coerceAtLeast(top))
+                val l = if (side == AppDrawer.Side.LEFT) (bar.right + gap).toInt() else (bar.left - gap - w).toInt()
+                Rect(l, t, l + w, t + h)
+            }
+        }
+        val rebuilt = drawer.attach(Prefs.finish(this), rect, side)
         // The pour sits above the grid, so an app opened from the grid swells over it
         if (rebuilt) pour.detach()
         pour.ensure()

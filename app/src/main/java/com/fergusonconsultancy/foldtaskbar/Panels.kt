@@ -142,7 +142,11 @@ class AppDrawer(
     private var key = ""
     private var running: Animator? = null
     private var liquid: LiquidPanel? = null
-    private var fromTop = false
+    /** The panel's edge that faces the bar: the edge the liquid pours in through. */
+    enum class Side { BOTTOM, TOP, LEFT, RIGHT }
+    private var side = Side.BOTTOM
+    private val fromTop get() = side == Side.TOP
+    private val sideways get() = side == Side.LEFT || side == Side.RIGHT
     /** Set when an app is opened from the grid: the panel drains into its icon. */
     private var drainTo: View? = null
 
@@ -153,13 +157,14 @@ class AppDrawer(
     val dragSource: View? get() = grid
 
     /** Builds the windows for this size and finish. Cheap to call: does nothing if unchanged. */
-    /** [fromTop] places the grid below a bar near the top; otherwise above a bar near the bottom. */
-    fun attach(finish: Finish, widthPx: Int, heightPx: Int, offsetPx: Int, fromTop: Boolean): Boolean {
-        val k = "$finish|$widthPx|$heightPx|$offsetPx|$fromTop"
+    /** [rect] is where the panel sits on screen; [side] is its edge facing the bar. */
+    fun attach(finish: Finish, rect: android.graphics.Rect, side: Side): Boolean {
+        val widthPx = rect.width(); val heightPx = rect.height()
+        val k = "$finish|$rect|$side"
         if (k == key && panelHost != null) return false
         detach()
         key = k
-        this.fromTop = fromTop
+        this.side = side
 
         scrim = View(context).apply {
             setBackgroundColor(0x73000000)
@@ -200,9 +205,8 @@ class AppDrawer(
         // The liquid spans the whole screen, so it can rise out of the grid button itself
         // and drain back into it, wherever the bar sits.
         liquid = LiquidPanel(finish).apply {
-            addView(panel, FrameLayout.LayoutParams(widthPx, heightPx,
-                (if (fromTop) Gravity.TOP else Gravity.BOTTOM) or Gravity.CENTER_HORIZONTAL).apply {
-                if (fromTop) topMargin = offsetPx else bottomMargin = offsetPx
+            addView(panel, FrameLayout.LayoutParams(widthPx, heightPx, Gravity.TOP or Gravity.START).apply {
+                leftMargin = rect.left; topMargin = rect.top
             })
             setOnClickListener { close() }
         }
@@ -341,9 +345,13 @@ class AppDrawer(
         }
         val p = panel ?: return android.graphics.RectF()
         val size = context.dp(44).toFloat()
-        val cx = (p.left + p.right) / 2f
-        return if (fromTop) android.graphics.RectF(cx - size / 2, p.top.toFloat(), cx + size / 2, p.top + size)
-        else android.graphics.RectF(cx - size / 2, p.bottom - size, cx + size / 2, p.bottom.toFloat())
+        val cx = (p.left + p.right) / 2f; val cy = (p.top + p.bottom) / 2f
+        return when (side) {
+            Side.TOP -> android.graphics.RectF(cx - size / 2, p.top.toFloat(), cx + size / 2, p.top + size)
+            Side.BOTTOM -> android.graphics.RectF(cx - size / 2, p.bottom - size, cx + size / 2, p.bottom.toFloat())
+            Side.LEFT -> android.graphics.RectF(p.left.toFloat(), cy - size / 2, p.left + size, cy + size / 2)
+            Side.RIGHT -> android.graphics.RectF(p.right - size, cy - size / 2, p.right.toFloat(), cy + size / 2)
+        }
     }
 
     private fun rectOf(l: View, v: View): android.graphics.RectF {
@@ -382,15 +390,13 @@ class AppDrawer(
             // Far edge leads on a spring; the sides follow a beat behind
             val lead = surge.getInterpolation((t / 0.8f).coerceAtMost(1f))
             val spread = Curves.OPEN.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
-            if (fromTop) {
-                r.top = origin.top + (full.top - origin.top) * minOf(spread * 1.2f, 1f)
-                r.bottom = origin.bottom + (full.bottom - origin.bottom) * lead
-            } else {
-                r.bottom = origin.bottom + (full.bottom - origin.bottom) * minOf(spread * 1.2f, 1f)
-                r.top = origin.top + (full.top - origin.top) * lead
-            }
-            r.left = origin.left + (full.left - origin.left) * spread
-            r.right = origin.right + (full.right - origin.right) * spread
+            val near = minOf(spread * 1.2f, 1f)
+            fun mix(a: Float, b: Float, f: Float) = a + (b - a) * f
+            // The far edge leads, the near edge (at the bar) follows, the cross edges spread
+            r.left = mix(origin.left, full.left, when (side) { Side.RIGHT -> lead; Side.LEFT -> near; else -> spread })
+            r.right = mix(origin.right, full.right, when (side) { Side.LEFT -> lead; Side.RIGHT -> near; else -> spread })
+            r.top = mix(origin.top, full.top, when (side) { Side.BOTTOM -> lead; Side.TOP -> near; else -> spread })
+            r.bottom = mix(origin.bottom, full.bottom, when (side) { Side.TOP -> lead; Side.BOTTOM -> near; else -> spread })
             val radius = (origin.width() / 2f) + (context.dp(26) - origin.width() / 2f) * spread
 
             path.reset()
@@ -405,18 +411,31 @@ class AppDrawer(
                 extra.addCircle(cx, cy, drop, android.graphics.Path.Direction.CW)
                 path.op(extra, android.graphics.Path.Op.UNION)
                 extra.reset()
-                val nearY = if (fromTop) r.top else r.bottom
-                val gapping = if (fromTop) nearY < cy else nearY > cy
-                if (!gapping) {
-                    val top = origin.width() * 0.5f * left
-                    val foot = drop * 0.8f
-                    val waist = minOf(top, foot) * 0.45f
-                    val midY = (nearY + cy) / 2f
-                    extra.moveTo(cx - top, nearY)
-                    extra.quadTo(cx - waist, midY, cx - foot, cy)
-                    extra.lineTo(cx + foot, cy)
-                    extra.quadTo(cx + waist, midY, cx + top, nearY)
-                    extra.close()
+                val top = origin.width() * 0.5f * left
+                val foot = drop * 0.8f
+                val waist = minOf(top, foot) * 0.45f
+                if (!sideways) {
+                    val nearY = if (fromTop) r.top else r.bottom
+                    val gapping = if (fromTop) nearY < cy else nearY > cy
+                    if (!gapping) {
+                        val midY = (nearY + cy) / 2f
+                        extra.moveTo(cx - top, nearY)
+                        extra.quadTo(cx - waist, midY, cx - foot, cy)
+                        extra.lineTo(cx + foot, cy)
+                        extra.quadTo(cx + waist, midY, cx + top, nearY)
+                        extra.close()
+                    }
+                } else {
+                    val nearX = if (side == Side.LEFT) r.left else r.right
+                    val gapping = if (side == Side.LEFT) nearX < cx else nearX > cx
+                    if (!gapping) {
+                        val midX = (nearX + cx) / 2f
+                        extra.moveTo(nearX, cy - top)
+                        extra.quadTo(midX, cy - waist, cx, cy - foot)
+                        extra.lineTo(cx, cy + foot)
+                        extra.quadTo(midX, cy + waist, nearX, cy + top)
+                        extra.close()
+                    }
                 }
                 // Joined as one body, so the overlaps never cancel out
                 path.op(extra, android.graphics.Path.Op.UNION)
