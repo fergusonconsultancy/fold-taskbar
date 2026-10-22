@@ -13,7 +13,7 @@ A taskbar for the Galaxy Z Fold 8 Ultra's main screen that works with any launch
 - App switching: Zoom (the app's last screen grows out of its icon and dissolves into the live app), Reveal, Grow or the system animation. A refused animation never stops an app opening.
 - Drag any app out of the bar (press and slide) or the grid (hold, then slide) for a true One UI split screen. The bar hands Android an app drag, the same route Samsung's own taskbar uses, so One UI's own drop zones, app picker and divider take over.
 - Vanishes the instant the phone starts to fold (hinge sensor), so it never lingers on the cover screen.
-- App pairs: hold an app and choose Pair with another app, or hold the grid button to save the two apps on screen as a pair. Pairs sit in the bar and open both apps in split screen.
+- App pairs: hold an app and choose Pair with another app, or hold the grid button to save the two apps on screen as a pair. Pairs sit in the bar: drag a pair to either half and the first app opens while the second lands in One UI's split, in one movement. Tapping a pair opens the first app and points you to the drag.
 - Always showing by default, or auto-hide: swipe up where the bar sits to call it back. Hold the grid button to switch.
 
 ## Get the APK
@@ -32,7 +32,7 @@ It is the only way an ordinary app can draw over every other app, know which app
 ## Limits
 
 - The bar floats over apps. Unlike Samsung's taskbar, it cannot make apps resize above it, so it covers a strip at the bottom.
-- True split screen comes from dragging. Without a drag (the hold menu's split option, app pairs), One UI refused every other route in testing (its split shortcut, a fresh window, a relaunch), so those fall back to a pop-up filling the half.
+- True split screen only comes from a drag: One UI refused every other route in testing (its split shortcut, a fresh window, a relaunch). So the hold menu's split option and a tapped pair show where to drag instead of opening a lesser split.
 - Flex mode (phone half open) hides the bar, because the hinge reads as closing.
 - Pop-up windows use a mode Android hides from ordinary apps. One UI may open the app full screen instead.
 - Full-screen video is not detected yet, so the bar stays over it.

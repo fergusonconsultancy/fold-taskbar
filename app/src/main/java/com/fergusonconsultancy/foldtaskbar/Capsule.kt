@@ -201,6 +201,9 @@ class Capsule(
         }
     }
 
+    /** The view showing [key] (an app's package, or a pair's key), if it is in this capsule. */
+    fun viewFor(key: String): View? = appViews.entries.firstOrNull { it.value == key }?.key
+
     /** The app icon under a point on screen, for dragging an app out of the bar. */
     fun appAt(x: Float, y: Float): Pair<String, View>? {
         val loc = IntArray(2)
@@ -291,6 +294,7 @@ class Capsule(
         })
         frame.addView(indicator().also { indicators[slot.key] = it })
         pressable(frame)
+        appViews[frame] = slot.key
         frame.setOnClickListener { it.tick(); actions.onPair(slot.left, slot.right, it) }
         frame.setOnLongClickListener { it.thud(); actions.onPairHeld(slot.left, slot.right, it); true }
         return frame

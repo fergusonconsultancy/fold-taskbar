@@ -1074,11 +1074,80 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     /** Opens a saved pair: [left] on the left half, [right] on the right. */
-    private fun openPair(left: String, right: String) {
+    /**
+     * Opens a pair. One UI only builds a true split from a drag, so a tap opens the first
+     * app and invites the drag that brings in the second; dragging the pair itself does
+     * both in one movement (see [onAppDragStart]).
+     */
+    private fun openPair(left: String, right: String, from: View? = null) {
         closePanels()
-        val l = apps.entry(left)?.component ?: return
-        val r = apps.entry(right)?.component ?: return
-        startSplit(l, r)
+        if (onScreen.firstOrNull() != left) apps.open(left)
+        val key = Slot.AppPair(left, right).key
+        val anchor = from?.takeIf { it.isAttachedToWindow } ?: capsules.firstNotNullOfOrNull { it.viewFor(key) }
+        main.postDelayed({
+            hint("Drag the pair to either half to add ${apps.entry(right)?.label ?: "the other app"}", anchor)
+        }, 450)
+    }
+
+    // ---- Hints --------------------------------------------------------------------
+
+    private var hintWindow: View? = null
+    private val hideHint = Runnable { dismissHint() }
+
+    /**
+     * A short line of guidance beside the bar, pointing at [anchor], which pulses twice so
+     * your eye finds it. It never takes a touch and leaves by itself.
+     */
+    private fun hint(text: String, anchor: View?) {
+        dismissHint()
+        val finish = Prefs.finish(this)
+        val label = android.widget.TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            setTextColor(finish.ink)
+            background = surface(this@TaskbarService, finish, 999f)
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            elevation = dp(6).toFloat()
+            alpha = 0f
+            translationY = dp(6).toFloat()
+        }
+        val host = shadowHost(label)
+        host.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val s = screen()
+        val loc = IntArray(2)
+        val ax: Int; val ay: Int; val ah: Int
+        if (anchor != null && anchor.isAttachedToWindow) {
+            anchor.getLocationOnScreen(loc); ax = loc[0] + anchor.width / 2; ay = loc[1]; ah = anchor.height
+        } else {
+            ax = s.width() / 2; ay = s.height() - navInset() - dp(80); ah = 0
+        }
+        val x = (ax - host.measuredWidth / 2).coerceIn(0, maxOf(0, s.width() - host.measuredWidth))
+        val above = ay - host.measuredHeight - dp(6)
+        val y = if (above >= statusInset()) above else ay + ah + dp(6)
+        val p = params(Gravity.TOP or Gravity.START, x, y).apply {
+            flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+        add(host, p)
+        hintWindow = host
+        label.animate().alpha(1f).translationY(0f).setDuration(Curves.OPEN_MS).setInterpolator(Curves.OPEN).start()
+        anchor?.let { a ->
+            fun pulse(times: Int) {
+                if (times == 0 || !a.isAttachedToWindow) return
+                a.animate().scaleX(1.16f).scaleY(1.16f).setDuration(180).setInterpolator(Curves.OPEN).withEndAction {
+                    a.animate().scaleX(1f).scaleY(1f).setDuration(220).setInterpolator(Curves.OPEN).withEndAction { pulse(times - 1) }.start()
+                }.start()
+            }
+            pulse(2)
+        }
+        main.removeCallbacks(hideHint)
+        main.postDelayed(hideHint, 3600)
+    }
+
+    private fun dismissHint() {
+        main.removeCallbacks(hideHint)
+        val h = hintWindow ?: return
+        hintWindow = null
+        h.animate().alpha(0f).setDuration(160).withEndAction { remove(h) }.start()
     }
 
     /**
@@ -1222,6 +1291,15 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         capsules.getOrNull(hosts.indexOf(host))?.isHandle(x, y) == true
 
     override fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float) {
+        dismissHint()
+        if (pkg.startsWith("pair:")) {
+            // Dragging a pair: the first app opens now, the second rides the drag into a half
+            val (left, right) = pkg.removePrefix("pair:").split('|').let { it[0] to it[1] }
+            if (onScreen.firstOrNull() != left) apps.open(left)
+            if (systemDrag(host, right)) return
+            beginDrag(right, x, y)
+            return
+        }
         if (systemDrag(host, pkg)) return
         beginDrag(pkg, x, y)
     }
@@ -1349,7 +1427,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (Prefs.autoHide(this) && revealed) scheduleAutoHide()
     }
 
-    override fun onPair(left: String, right: String, view: View) = openPair(left, right)
+    override fun onPair(left: String, right: String, view: View) = openPair(left, right, view)
 
     override fun onPairHeld(left: String, right: String, view: View) {
         closePanels()
@@ -1377,7 +1455,16 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val pinned = Prefs.pinned(this)
         val isPinned = pkg in pinned
         val rows = buildList<Pair<String, () -> Unit>> {
-            add("Open in split screen" to { splitWith(pkg) })
+            add("Open in split screen" to {
+                closeMenu()
+                // A true split only comes from a drag, so show where to drag from
+                val inGrid = drawer.isOpen
+                val label = apps.entry(pkg)?.label ?: "this app"
+                hint(
+                    if (inGrid) "Hold $label, then drag it to either half" else "Drag $label out of the bar to either half",
+                    if (inGrid) anchor else capsules.firstNotNullOfOrNull { it.viewFor(pkg) } ?: anchor,
+                )
+            })
             add("Open as pop-up (experimental)" to { closePanels(); apps.openPopup(pkg, wm.currentWindowMetrics.bounds) })
             add("Pair with another app" to {
                 closeMenu()
