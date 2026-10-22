@@ -139,6 +139,7 @@ class Apps(private val context: Context) {
         }.getOrNull() ?: runCatching {
             ActivityOptions.makeCustomAnimation(context, enter, exit).also { o ->
                 HiddenApiBypass.getInstanceFields(ActivityOptions::class.java)
+                    .map { it as java.lang.reflect.Field }
                     .first { it.name == "mOverrideTaskTransition" }
                     .apply { isAccessible = true }
                     .setBoolean(o, true)
