@@ -2,8 +2,10 @@ package com.fergusonconsultancy.foldtaskbar
 
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.text.TextUtils
@@ -73,6 +75,9 @@ object Curves {
     const val CLOSE_MS = 180L
 }
 
+private const val POUR_MS = 560L
+private const val DRAIN_MS = 240L
+
 /**
  * The all-apps grid. Built and attached once, invisible until called, so opening it is
  * only an animation. The grid draws only the icons on screen.
@@ -136,6 +141,10 @@ class AppDrawer(
     private var title: TextView? = null
     private var key = ""
     private var running: Animator? = null
+    private var liquid: LiquidPanel? = null
+    private var fromTop = false
+    /** Set when an app is opened from the grid: the panel drains into its icon. */
+    private var drainTo: View? = null
 
     var isOpen = false
         private set
@@ -150,6 +159,7 @@ class AppDrawer(
         if (k == key && panelHost != null) return
         detach()
         key = k
+        this.fromTop = fromTop
 
         scrim = View(context).apply {
             setBackgroundColor(0x73000000)
@@ -175,8 +185,7 @@ class AppDrawer(
         }
         panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = surface(context, finish, 26f)
-            elevation = context.dp(10).toFloat()
+            // The glass is drawn by the liquid around it
             setPadding(pad, pad, pad, pad)
             addView(TextView(context).apply {
                 text = "All apps"
@@ -187,12 +196,15 @@ class AppDrawer(
             }.also { title = it })
             addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
+        val inset = context.dp(10)
+        liquid = LiquidPanel(finish).apply {
+            setPadding(inset, inset, inset, inset)
+            addView(panel, FrameLayout.LayoutParams(widthPx, heightPx))
+        }
         panelHost = FrameLayout(context).apply {
             clipChildren = false
             clipToPadding = false
-            val p = context.dp(10)
-            setPadding(p, p, p, p)
-            addView(panel, FrameLayout.LayoutParams(widthPx, heightPx))
+            addView(liquid)
             visibility = View.INVISIBLE
         }
         wm.addView(panelHost, params(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
@@ -203,22 +215,23 @@ class AppDrawer(
     fun detach() {
         running?.cancel()
         listOf(scrim, panelHost).forEach { v -> if (v != null) runCatching { wm.removeView(v) } }
-        scrim = null; panelHost = null; panel = null; grid = null; adapter = null
+        scrim = null; panelHost = null; panel = null; grid = null; adapter = null; liquid = null
         isOpen = false
         key = ""
     }
 
     fun refreshApps() = adapter?.submit(apps.all())
 
-    /** [from] is the grid button: the drawer grows out of it and folds back into it. */
+    /** [from] is the grid button: the grid pours up out of it and drains back into it. */
     fun open(from: GlyphView?, heading: String = "All apps") {
         title?.text = heading
         val host = panelHost ?: return
-        val p = panel ?: return
+        val l = liquid ?: return
         val s = scrim ?: return
         if (isOpen) return
         isOpen = true
         button = from
+        drainTo = null
         running?.cancel()
         setTouchable(true)
 
@@ -227,20 +240,17 @@ class AppDrawer(
 
         host.alpha = 1f
         s.visibility = View.VISIBLE
-        s.animate().alpha(1f).setDuration(240).setInterpolator(Curves.OPEN).start()
-
+        s.animate().alpha(1f).setDuration(300).setInterpolator(Curves.OPEN).start()
         host.visibility = View.VISIBLE
-        p.alpha = 1f
-        val (cx, cy) = originIn(p, from)
-        val radius = hypot(maxOf(cx, p.width - cx).toDouble(), maxOf(cy, p.height - cy).toDouble()).toFloat()
-        running = runCatching {
-            ViewAnimationUtils.createCircularReveal(p, cx.toInt(), cy.toInt(), context.dp(20).toFloat(), radius).apply {
-                duration = Curves.OPEN_MS
-                interpolator = Curves.OPEN
-                start()
-            }
-        }.getOrNull()
-        cascade()
+
+        l.origin = originRect(l, from)
+        running = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = POUR_MS
+            interpolator = null
+            addUpdateListener { l.progress = it.animatedFraction; l.invalidate() }
+            start()
+        }
+        bubble(l.origin)
     }
 
     fun close(animated: Boolean = true) {
@@ -250,62 +260,153 @@ class AppDrawer(
         running?.cancel()
         button?.animateOpen(0f, Curves.CLOSE_MS, Curves.CLOSE)
         val host = panelHost ?: return
-        val p = panel ?: return
+        val l = liquid ?: return
         val s = scrim
-        s?.animate()?.alpha(0f)?.setDuration(Curves.CLOSE_MS)?.setInterpolator(Curves.CLOSE)
+        s?.animate()?.alpha(0f)?.setDuration(DRAIN_MS)?.setInterpolator(Curves.CLOSE)
             ?.withEndAction { if (!isOpen) s.visibility = View.INVISIBLE }?.start()
 
-        if (!animated || !p.isAttachedToWindow) { hideNow(host); return }
-        val (cx, cy) = originIn(p, button)
-        val radius = hypot(maxOf(cx, p.width - cx).toDouble(), maxOf(cy, p.height - cy).toDouble()).toFloat()
-        running = runCatching {
-            ViewAnimationUtils.createCircularReveal(p, cx.toInt(), cy.toInt(), radius, context.dp(20).toFloat()).apply {
-                duration = Curves.CLOSE_MS
-                interpolator = Curves.CLOSE
-                addListener(object : AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(animation: Animator) { if (!isOpen) hideNow(host) }
-                })
-                start()
-            }
-        }.getOrElse { hideNow(host); null }
+        if (!animated || !l.isAttachedToWindow) { hideNow(host); return }
+        // Drain into the app you chose, or back into the grid button
+        l.origin = drainTo?.let { rectOf(l, it) } ?: originRect(l, button)
+        grid?.let { g -> (0 until g.childCount).map { g.getChildAt(it) }.forEach { c ->
+            if (drainTo == null || c !== drainTo?.parent) c.animate().alpha(0f).scaleX(0.9f).scaleY(0.9f).setStartDelay(0).setDuration(110).start()
+        } }
+        val from = l.progress
+        running = ValueAnimator.ofFloat(from, 0f).apply {
+            duration = DRAIN_MS
+            interpolator = Curves.CLOSE
+            addUpdateListener { l.progress = it.animatedValue as Float; l.invalidate() }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) { if (!isOpen) hideNow(host) }
+            })
+            start()
+        }
     }
 
     private fun hideNow(host: View) {
         host.visibility = View.INVISIBLE
         host.alpha = 1f
+        drainTo = null
+        grid?.let { g -> (0 until g.childCount).map { g.getChildAt(it) }.forEach { c ->
+            c.animate().cancel(); c.alpha = 1f; c.scaleX = 1f; c.scaleY = 1f; c.translationX = 0f; c.translationY = 0f
+        } }
         grid?.scrollToPosition(0)
     }
 
-    /** Icons rise from the bar upwards, nearest row first, so the grid assembles towards you. */
-    private fun cascade() {
+    /**
+     * The icons bubble up out of the liquid as it arrives: nearest the grid button first,
+     * each on a soft spring that swells a touch past its size and settles, like a drop
+     * finding its shape.
+     */
+    private fun bubble(origin: android.graphics.RectF) {
         val g = grid ?: return
-        val lm = g.layoutManager as? GridLayoutManager ?: return
-        val span = lm.spanCount
-        val rise = context.dp(18).toFloat()
+        val l = liquid ?: return
         val children = (0 until g.childCount).map { g.getChildAt(it) }
         if (children.isEmpty()) return
-        val rows = children.map { g.getChildAdapterPosition(it) / span }
-        val bottomRow = rows.maxOrNull() ?: 0
-        children.forEachIndexed { i, child ->
-            val fromBottom = bottomRow - rows[i]
-            child.animate().cancel()
-            child.alpha = 0f
-            child.translationY = rise
-            child.scaleX = 0.92f; child.scaleY = 0.92f
-            child.animate()
-                .alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
-                .setStartDelay(30L + fromBottom * 26L)
-                .setDuration(260)
-                .setInterpolator(Curves.OPEN)
+        val gl = IntArray(2).also { g.getLocationOnScreen(it) }
+        val ll = IntArray(2).also { l.getLocationOnScreen(it) }
+        val ox = origin.centerX() + ll[0] - gl[0]
+        val oy = origin.centerY() + ll[1] - gl[1]
+        val far = children.maxOf { c -> hypot((c.left + c.width / 2f - ox).toDouble(), (c.top + c.height / 2f - oy).toDouble()) }.toFloat().coerceAtLeast(1f)
+        children.forEach { c ->
+            val dx = c.left + c.width / 2f - ox
+            val dy = c.top + c.height / 2f - oy
+            val d = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+            c.animate().cancel()
+            c.alpha = 0f
+            c.scaleX = 0.45f; c.scaleY = 0.45f
+            // Each icon starts a little closer to where the liquid came from
+            c.translationX = -dx * 0.12f; c.translationY = -dy * 0.12f
+            c.animate()
+                .alpha(1f).scaleX(1f).scaleY(1f).translationX(0f).translationY(0f)
+                .setStartDelay((70 + d / far * 260).toLong())
+                .setDuration(420)
+                .setInterpolator(android.view.animation.OvershootInterpolator(1.6f))
                 .start()
         }
     }
 
-    private fun originIn(panel: View, from: View?): Pair<Float, Float> {
-        if (from == null || !from.isAttachedToWindow || !panel.isAttachedToWindow) return panel.width / 2f to panel.height.toFloat()
-        val a = IntArray(2).also { from.getLocationOnScreen(it) }
-        val b = IntArray(2).also { panel.getLocationOnScreen(it) }
-        return (a[0] + from.width / 2f - b[0]) to (a[1] + from.height / 2f - b[1])
+    /** Where the pour begins: a drop the width of the grid button, at the panel's near edge. */
+    private fun originRect(l: View, from: View?): android.graphics.RectF {
+        val w = l.width.toFloat(); val h = l.height.toFloat()
+        val size = from?.width?.toFloat()?.takeIf { it > 0 } ?: context.dp(44).toFloat()
+        val cx = from?.takeIf { it.isAttachedToWindow }?.let {
+            val a = IntArray(2).also { p -> it.getLocationOnScreen(p) }
+            val b = IntArray(2).also { p -> l.getLocationOnScreen(p) }
+            (a[0] + it.width / 2f - b[0]).coerceIn(size / 2, w - size / 2)
+        } ?: (w / 2)
+        val pad = (l as? LiquidPanel)?.inset ?: 0f
+        return if (fromTop) android.graphics.RectF(cx - size / 2, pad, cx + size / 2, pad + size)
+        else android.graphics.RectF(cx - size / 2, h - pad - size, cx + size / 2, h - pad)
+    }
+
+    private fun rectOf(l: View, v: View): android.graphics.RectF {
+        val a = IntArray(2).also { v.getLocationOnScreen(it) }
+        val b = IntArray(2).also { l.getLocationOnScreen(it) }
+        return android.graphics.RectF((a[0] - b[0]).toFloat(), (a[1] - b[1]).toFloat(), (a[0] - b[0] + v.width).toFloat(), (a[1] - b[1] + v.height).toFloat())
+    }
+
+    /**
+     * The panel's glass, drawn as a liquid. At progress 0 it is a drop at [origin]; as it
+     * rises, the edge facing away from the bar surges ahead on a soft spring while the
+     * sides follow, so a column climbs out of the button and then spreads into the panel,
+     * its corners relaxing from round to the panel's radius. A neck joins it to the drop
+     * until the panel has filled out. Content is clipped to the same shape.
+     */
+    private inner class LiquidPanel(private val finish: Finish) : FrameLayout(context) {
+        var origin = android.graphics.RectF()
+        var progress = 1f
+        val inset = context.dp(10).toFloat()
+        private val path = android.graphics.Path()
+        private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = finish.fill }
+        private val edge = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; color = finish.edge; strokeWidth = context.dp(1).toFloat()
+        }
+        private val shade = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0x33000000 }
+        private val r = android.graphics.RectF()
+        private val surge = android.view.animation.OvershootInterpolator(0.9f)
+
+        init { setWillNotDraw(false); clipChildren = true }
+
+        override fun dispatchDraw(canvas: Canvas) {
+            val full = android.graphics.RectF(inset, inset, width - inset, height - inset)
+            val t = progress.coerceIn(0f, 1f)
+            // Far edge leads on a spring; the sides follow a beat behind
+            val lead = surge.getInterpolation((t / 0.8f).coerceAtMost(1f))
+            val spread = Curves.OPEN.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
+            if (fromTop) {
+                r.top = origin.top + (full.top - origin.top) * minOf(spread * 1.2f, 1f)
+                r.bottom = origin.bottom + (full.bottom - origin.bottom) * lead
+            } else {
+                r.bottom = origin.bottom + (full.bottom - origin.bottom) * minOf(spread * 1.2f, 1f)
+                r.top = origin.top + (full.top - origin.top) * lead
+            }
+            r.left = origin.left + (full.left - origin.left) * spread
+            r.right = origin.right + (full.right - origin.right) * spread
+            val radius = (origin.width() / 2f) + (context.dp(26) - origin.width() / 2f) * spread
+
+            path.reset()
+            path.addRoundRect(r, radius, radius, android.graphics.Path.Direction.CW)
+            // The neck back to the drop, thinning as the panel fills out
+            val neck = (1f - spread) * origin.width() * 0.5f
+            if (neck > 1f && t < 1f) {
+                val cx = origin.centerX()
+                val nearY = if (fromTop) r.top else r.bottom
+                val dropY = if (fromTop) origin.top else origin.bottom
+                path.moveTo(cx - neck, nearY)
+                path.quadTo(cx - neck * 0.4f, (nearY + dropY) / 2, cx - origin.width() / 2, dropY)
+                path.lineTo(cx + origin.width() / 2, dropY)
+                path.quadTo(cx + neck * 0.4f, (nearY + dropY) / 2, cx + neck, nearY)
+                path.close()
+            }
+            canvas.save(); canvas.translate(0f, context.dp(3).toFloat()); canvas.drawPath(path, shade); canvas.restore()
+            canvas.drawPath(path, fill)
+            canvas.drawPath(path, edge)
+            canvas.save()
+            canvas.clipPath(path)
+            super.dispatchDraw(canvas)
+            canvas.restore()
+        }
     }
 
     private fun setTouchable(on: Boolean) {
@@ -366,7 +467,12 @@ class AppDrawer(
             h.icon.setImageDrawable(apps.icon(app.pkg))
             h.label.text = app.label
             h.itemView.contentDescription = app.label
-            h.itemView.setOnClickListener { it.tick(); onOpenApp(app.pkg, h.icon) }
+            h.itemView.setOnClickListener {
+                it.tick()
+                drainTo = h.icon
+                h.icon.animate().scaleX(1.14f).scaleY(1.14f).setDuration(140).setInterpolator(Curves.OPEN).start()
+                onOpenApp(app.pkg, h.icon)
+            }
             h.itemView.setOnLongClickListener { it.thud(); armedPkg = app.pkg; onHoldApp(app.pkg, it); true }
         }
     }

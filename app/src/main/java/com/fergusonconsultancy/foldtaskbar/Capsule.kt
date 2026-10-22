@@ -215,40 +215,178 @@ class Capsule(
     }
 
     /** Moves the open-app marks without touching anything else, so nothing redraws. */
+    /**
+     * The active-app light, drawn by the capsule itself so it can behave like a liquid.
+     * When you switch apps, the light's leading edge races ahead to the new app on a soft
+     * spring while its trailing edge follows a beat behind, so it stretches out along the
+     * bar; and because a liquid keeps its volume, it thins as it stretches and swells back
+     * as it gathers itself in at the new app. Lights that appear grow from their centre;
+     * lights that leave drain away into themselves.
+     */
+    private class Light(val key: String, val now: RectF, var from: RectF, var to: RectF?, var travel: Boolean)
+
+    private val lights = mutableListOf<Light>()
+    private var lightAnim: android.animation.ValueAnimator? = null
+    private val lightCore = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val lightHalo = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val lead = android.view.animation.OvershootInterpolator(1.1f)
+    private val trail = android.view.animation.PathInterpolator(0.55f, 0f, 0.15f, 1f)
+
+    private fun markRect(key: String): RectF? {
+        val v = indicators[key] ?: return null
+        val frame = v.parent as? View ?: return null
+        if (frame.width == 0) return null
+        return RectF((frame.left + v.left).toFloat(), (frame.top + v.top).toFloat(),
+            (frame.left + v.right).toFloat(), (frame.top + v.bottom).toFloat())
+    }
+
     fun setActive(active: Set<String>) {
-        val lit = indicators.filter { it.value.visibility == VISIBLE && it.value.tag != "off" }.keys
-        val on = indicators.keys.filter { it in active && it !in lit }
-        val off = lit.filter { it !in active }
+        val want = indicators.keys.filter { it in active }
+        val have = lights.filter { it.to != null }.map { it.key }
+        if (want.toSet() == have.toSet() && lightAnim?.isRunning != true) return
         if (!isAttachedToWindow || width == 0) {
-            indicators.forEach { (pkg, v) -> v.animate().cancel(); v.scaleX = 1f; v.tag = null; v.visibility = if (pkg in active) VISIBLE else INVISIBLE }
-            return
+            lights.clear()
+            want.forEach { k -> markRect(k)?.let { lights += Light(k, RectF(it), RectF(it), RectF(it), false) } }
+            post { if (width > 0) setActiveNow(active) }
+            invalidate(); return
         }
-        fun x(v: View) = IntArray(2).also { v.getLocationOnScreen(it) }[if (vertical) 1 else 0]
-        val goingTo = on.firstOrNull()?.let { indicators[it] }
-        val comingFrom = off.firstOrNull()?.let { indicators[it] }
-        off.forEach { pkg ->
-            val v = indicators[pkg] ?: return@forEach
-            // The light leaves through the side facing the newly opened app...
-            v.pivotX = if (goingTo != null && x(goingTo) > x(v)) v.width.toFloat() else 0f
-            v.tag = "off"
-            v.animate().cancel()
-            v.animate().scaleX(0f).setDuration(180).setInterpolator(Curves.CLOSE)
-                .withEndAction { if (v.tag == "off") { v.visibility = INVISIBLE; v.scaleX = 1f; v.tag = null } }.start()
+        setActiveNow(active)
+    }
+
+    private fun setActiveNow(active: Set<String>) {
+        val want = indicators.keys.filter { it in active }.mapNotNull { k -> markRect(k)?.let { k to it } }
+        val leaving = lights.filter { l -> l.to != null && want.none { it.first == l.key } }.toMutableList()
+        val next = mutableListOf<Light>()
+        want.forEach { (k, rect) ->
+            val existing = lights.firstOrNull { it.key == k && it.to != null }
+            when {
+                existing != null -> next += Light(k, RectF(existing.now), RectF(existing.now), rect, false)
+                leaving.isNotEmpty() -> {
+                    // One app replaced another: the old light travels to the new one
+                    val src = leaving.removeAt(0)
+                    next += Light(k, RectF(src.now), RectF(src.now), rect, true)
+                }
+                else -> {
+                    val seed = RectF(rect.centerX(), rect.top, rect.centerX(), rect.bottom)
+                    next += Light(k, RectF(seed), seed, rect, false)
+                }
+            }
         }
-        on.forEach { pkg ->
-            val v = indicators[pkg] ?: return@forEach
-            // ...and arrives through the side facing the app you left
-            v.pivotX = if (comingFrom != null && x(comingFrom) > x(v)) v.width.toFloat() else 0f
-            v.tag = null
+        leaving.forEach { l ->
+            val sink = RectF(l.now.centerX(), l.now.top, l.now.centerX(), l.now.bottom)
+            next += Light(l.key, RectF(l.now), RectF(l.now), null, false).also { it.from = RectF(l.now); it.now.set(l.now); it.to = null; drains[it] = sink }
+        }
+        lights.clear(); lights += next
+        lightAnim?.cancel()
+        lightAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 560
+            addUpdateListener { a -> stepLights(a.animatedFraction); invalidate() }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    lights.removeAll { it.to == null }; drains.clear(); invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    private val drains = HashMap<Light, RectF>()
+
+    private fun stepLights(t: Float) {
+        for (l in lights) {
+            val to = l.to
+            if (to == null) {
+                val sink = drains[l] ?: continue
+                lerpRect(l.now, l.from, sink, Curves.CLOSE.getInterpolation((t / 0.45f).coerceAtMost(1f)))
+                continue
+            }
+            if (!l.travel) {
+                lerpRect(l.now, l.from, to, lead.getInterpolation((t / 0.7f).coerceAtMost(1f)))
+                continue
+            }
+            // Travelling: leading edge first, trailing edge a beat behind
+            val forward = if (vertical) to.centerY() >= l.from.centerY() else to.centerX() >= l.from.centerX()
+            val fast = lead.getInterpolation((t / 0.62f).coerceAtMost(1f))
+            val slow = trail.getInterpolation(((t - 0.12f) / 0.88f).coerceIn(0f, 1f))
+            if (!vertical) {
+                val a = if (forward) slow else fast
+                val b = if (forward) fast else slow
+                l.now.left = l.from.left + (to.left - l.from.left) * a
+                l.now.right = l.from.right + (to.right - l.from.right) * b
+            } else {
+                val a = if (forward) slow else fast
+                val b = if (forward) fast else slow
+                l.now.top = l.from.top + (to.top - l.from.top) * a
+                l.now.bottom = l.from.bottom + (to.bottom - l.from.bottom) * b
+            }
+            // The other two edges follow evenly
+            val even = trail.getInterpolation(t)
+            if (!vertical) { l.now.top = l.from.top + (to.top - l.from.top) * even; l.now.bottom = l.from.bottom + (to.bottom - l.from.bottom) * even }
+            else { l.now.left = l.from.left + (to.left - l.from.left) * even; l.now.right = l.from.right + (to.right - l.from.right) * even }
+        }
+    }
+
+    private fun lerpRect(out: RectF, a: RectF, b: RectF, t: Float) {
+        out.set(a.left + (b.left - a.left) * t, a.top + (b.top - a.top) * t, a.right + (b.right - a.right) * t, a.bottom + (b.bottom - a.bottom) * t)
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        if (lights.isEmpty()) return
+        val restLen = context.dp(iconDp * 0.34f).toFloat()
+        val restThick = context.dp(3).toFloat()
+        for (l in lights) {
+            val r = l.now
+            val len = if (vertical && l.travel) r.height() else r.width()
+            if (len <= 0.5f) continue
+            // Volume is kept: a longer light is a thinner one
+            val thick = (restThick * (restLen / len).coerceIn(0.35f, 1.4f)).coerceAtLeast(context.dp(1).toFloat())
+            val cx = r.centerX(); val cy = r.centerY()
+            val draw = if (vertical && l.travel) RectF(cx - thick / 2, r.top, cx + thick / 2, r.bottom)
+            else RectF(r.left, cy - thick / 2, r.right, cy + thick / 2)
+            val colour = glows[zoneAt(if (vertical) cy else cx)]
+            lightHalo.color = (colour and 0x00FFFFFF) or 0x40000000
+            val halo = RectF(draw).apply { inset(-thick * 0.9f, -thick * 0.9f) }
+            canvas.drawRoundRect(halo, halo.height().coerceAtMost(halo.width()) / 2, halo.height().coerceAtMost(halo.width()) / 2, lightHalo)
+            lightCore.color = colour
+            val rad = minOf(draw.width(), draw.height()) / 2
+            canvas.drawRoundRect(draw, rad, rad, lightCore)
+        }
+    }
+
+    private fun zoneAt(pos: Float): Int {
+        val len = if (vertical) height else width
+        if (len <= 0) return 0
+        return (pos / len * ZONES).toInt().coerceIn(0, ZONES - 1)
+    }
+
+    /**
+     * A tap sends a small ripple along the bar: the neighbours lean away from the icon you
+     * touched and spring back, nearest first, as if the bar were a surface you pressed.
+     */
+    private fun ripple(from: View) {
+        val i = indexOfChild(from)
+        if (i < 0) return
+        for (j in 0 until childCount) {
+            if (j == i) continue
+            val v = getChildAt(j)
+            val d = kotlin.math.abs(j - i)
+            if (d > 3) continue
+            val push = context.dp(4f / d).toFloat() * (if (j > i) 1 else -1)
             v.animate().cancel()
-            v.scaleX = 0f
-            v.visibility = VISIBLE
-            v.animate().scaleX(1f).setStartDelay(if (comingFrom != null) 90 else 0).setDuration(280).setInterpolator(Curves.OPEN).start()
+            val prop = if (vertical) View.TRANSLATION_Y else View.TRANSLATION_X
+            android.animation.ObjectAnimator.ofFloat(v, prop, 0f, push, 0f).apply {
+                startDelay = 30L * d
+                duration = 380
+                interpolator = android.view.animation.PathInterpolator(0.3f, 0f, 0.2f, 1f)
+                start()
+            }
         }
     }
 
     private fun rebuild(slots: List<Slot>) {
         removeAllViews()
+        lights.clear()
         indicators.clear()
         appViews.clear()
         dividers.clear()
@@ -295,7 +433,7 @@ class Capsule(
         frame.addView(indicator().also { indicators[slot.key] = it })
         pressable(frame)
         appViews[frame] = slot.key
-        frame.setOnClickListener { it.tick(); actions.onPair(slot.left, slot.right, it) }
+        frame.setOnClickListener { it.tick(); ripple(it); actions.onPair(slot.left, slot.right, it) }
         frame.setOnLongClickListener { it.thud(); actions.onPairHeld(slot.left, slot.right, it); true }
         return frame
     }
@@ -327,7 +465,7 @@ class Capsule(
         }.also { indicators[slot.pkg] = it })
         appViews[frame] = slot.pkg
         pressable(frame)
-        frame.setOnClickListener { it.tick(); actions.onApp(slot.pkg, it) }
+        frame.setOnClickListener { it.tick(); ripple(it); actions.onApp(slot.pkg, it) }
         frame.setOnLongClickListener { it.thud(); actions.onAppHeld(slot.pkg, it); true }
         return frame
     }
@@ -352,7 +490,9 @@ class Capsule(
                     if (view is GlyphView && !view.isParted) view.animateOpen(0.3f, 90, Curves.OPEN)
                 }
                 android.view.MotionEvent.ACTION_UP ->
-                    view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140).start()
+                    // Released, the icon springs back with a little give, like something soft
+                    view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(340)
+                        .setInterpolator(android.view.animation.OvershootInterpolator(3f)).start()
                 android.view.MotionEvent.ACTION_CANCEL -> {
                     view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140).start()
                     if (view is GlyphView && !view.isParted) view.animateOpen(0f, 140, Curves.CLOSE)

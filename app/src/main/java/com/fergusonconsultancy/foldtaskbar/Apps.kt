@@ -42,10 +42,29 @@ class Apps(private val context: Context) {
 
     fun entry(pkg: String): AppEntry? = entries[pkg] ?: launcher.getActivityList(pkg, user).firstOrNull()?.let { remember(it) }
 
-    fun icon(pkg: String): Drawable? = icons[pkg] ?: launcher.getActivityList(pkg, user).firstOrNull()
-        ?.getBadgedIcon(0)?.also { icons[pkg] = it }
+    /** An app's icon: from your icon pack when one is chosen, so bar and grid match your home screen. */
+    fun icon(pkg: String): Drawable? = icons[pkg] ?: run {
+        val info = launcher.getActivityList(pkg, user).firstOrNull() ?: return null
+        val base = info.getBadgedIcon(0)
+        val themed = pack()?.let { p -> runCatching { p.iconFor(info.componentName, base) }.getOrNull() } ?: base
+        themed?.also { icons[pkg] = it }
+    }
 
-    fun forget() { icons.clear(); entries.clear(); allCache = null }
+    @Volatile private var iconPack: IconPack? = null
+    @Volatile private var packLoaded = false
+
+    private fun pack(): IconPack? {
+        if (!packLoaded) {
+            packLoaded = true
+            iconPack = Prefs.iconPack(context)?.let { runCatching { IconPack(context, it) }.getOrNull() }
+        }
+        return iconPack
+    }
+
+    /** For the event log: which icons are in use. */
+    fun iconSummary(): String = pack()?.let { "${it.pkg} (${it.size} icons in the pack)" } ?: "the phone's own icons"
+
+    fun forget() { icons.clear(); entries.clear(); allCache = null; packLoaded = false }
 
     fun onPackagesChanged(listener: () -> Unit) {
         launcher.registerCallback(object : LauncherApps.Callback() {
@@ -101,7 +120,7 @@ class Apps(private val context: Context) {
             Motion.ZOOM -> if (snapshot != null) {
                 val tw = (v.width * 2.6f).toInt().coerceAtLeast(1)
                 val th = (tw * snapshot.height / snapshot.width.toFloat()).toInt().coerceAtLeast(1)
-                val thumb = android.graphics.Bitmap.createScaledBitmap(snapshot, tw, th, true)
+                val thumb = rounded(android.graphics.Bitmap.createScaledBitmap(snapshot, tw, th, true), tw * 0.2f)
                 ActivityOptions.makeThumbnailScaleUpAnimation(v, thumb, v.width / 2 - tw / 2, v.height / 2 - th / 2)
             } else ActivityOptions.makeClipRevealAnimation(v, 0, 0, v.width, v.height)
             Motion.REVEAL -> ActivityOptions.makeClipRevealAnimation(v, 0, 0, v.width, v.height)
@@ -153,6 +172,21 @@ class Apps(private val context: Context) {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(e.component)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return runCatching { context.startActivity(intent, options.toBundle()) }.isSuccess
+    }
+
+    /**
+     * The picture Zoom grows is given rounded, icon-like corners, so the app swells out of
+     * a soft window shaped like the icon you touched rather than a hard-edged rectangle.
+     * The corners grow with it and melt into the app as it dissolves in.
+     */
+    private fun rounded(src: android.graphics.Bitmap, radius: Float): android.graphics.Bitmap {
+        val out = android.graphics.Bitmap.createBitmap(src.width, src.height, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(out)
+        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+            shader = android.graphics.BitmapShader(src, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP)
+        }
+        c.drawRoundRect(0f, 0f, src.width.toFloat(), src.height.toFloat(), radius, radius, p)
+        return out
     }
 
     private fun remember(info: LauncherActivityInfo): AppEntry {

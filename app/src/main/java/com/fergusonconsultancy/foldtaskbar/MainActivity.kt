@@ -83,6 +83,14 @@ class MainActivity : Activity() {
         root.addView(button("Put the taskbar back at the bottom") {
             Prefs.resetSpots(this); refresh()
         })
+        root.addView(choice({
+            val pack = Prefs.iconPack(this)
+            "Icons: " + (IconPack.installed(this).firstOrNull { it.first == pack }?.second ?: pack ?: "the phone's own")
+        }) {
+            val options = listOf<String?>(null) + IconPack.installed(this).map { it.first }
+            val now = options.indexOf(Prefs.iconPack(this)).coerceAtLeast(0)
+            Prefs.setIconPack(this, options[(now + 1) % options.size])
+        })
         root.addView(choice({ "Recent apps shown: ${Prefs.recentCount(this)}" }) {
             val all = Prefs.RECENT_COUNTS
             Prefs.setRecentCount(this, all[(all.indexOf(Prefs.recentCount(this)) + 1) % all.size])

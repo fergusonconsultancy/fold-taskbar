@@ -52,6 +52,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private var barOn = false
     private var menuWindow: View? = null
     private lateinit var drawer: AppDrawer
+    private var lastIconSummary: String? = null
+
     /** Picking the second app of a new pair from the grid. */
     private var pairingFirst: String? = null
 
@@ -147,6 +149,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     override fun onSharedPreferenceChanged(p: SharedPreferences?, key: String?) {
+        if (key == Prefs.ICON_PACK) {
+            // New icons everywhere: rebuild the bar and reload the grid
+            layoutKey = ""
+            warmApps(rebuildList = true)
+        }
         main.removeCallbacks(applyNow)
         main.post(applyNow)
     }
@@ -1505,7 +1512,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         bg.post {
             if (rebuildList) apps.forget()
             apps.preload()
-            main.post { drawer.refreshApps() }
+            val summary = apps.iconSummary()
+            main.post {
+                drawer.refreshApps()
+                if (summary != lastIconSummary) { lastIconSummary = summary; EventLog.add(this, "Icons: $summary") }
+            }
         }
     }
 

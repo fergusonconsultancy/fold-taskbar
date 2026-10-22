@@ -82,6 +82,18 @@ object Prefs {
     fun systemDrag(c: Context) = of(c).getBoolean("system_drag", true)
     fun setSystemDrag(c: Context, v: Boolean) = of(c).edit().putBoolean("system_drag", v).apply()
 
+    /**
+     * The icon pack whose icons the bar and grid use: a package name, or null for the
+     * phone's own icons. Until chosen, Icon Pack Studio is used if it is installed.
+     */
+    fun iconPack(c: Context): String? {
+        val v = of(c).getString(ICON_PACK, null)
+        if (v != null) return v.ifEmpty { null }
+        return runCatching { c.packageManager.getApplicationInfo(IconPack.ICON_PACK_STUDIO, 0); IconPack.ICON_PACK_STUDIO }.getOrNull()
+    }
+    fun setIconPack(c: Context, v: String?) = of(c).edit().putString(ICON_PACK, v ?: "").apply()
+    const val ICON_PACK = "icon_pack"
+
     fun motion(c: Context) = runCatching { Motion.valueOf(of(c).getString(MOTION, null)!!) }.getOrDefault(Motion.ZOOM)
     fun setMotion(c: Context, v: Motion) = of(c).edit().putString(MOTION, v.name).apply()
 
