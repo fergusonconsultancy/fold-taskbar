@@ -113,7 +113,7 @@ class MainActivity : Activity() {
         }
         root.addView(logText)
         root.addView(button("Clear log") { EventLog.clear(this); refresh() })
-        root.addView(choice({ if (Prefs.systemDrag(this)) "Dragging apps: Android's own split zones (experimental)" else "Dragging apps: Fold Taskbar's guide" }) {
+        root.addView(choice({ if (Prefs.systemDrag(this)) "Dragging apps: One UI's own split screen" else "Dragging apps: Fold Taskbar's guide (pop-ups only)" }) {
             Prefs.setSystemDrag(this, !Prefs.systemDrag(this))
         })
         root.addView(button("Run the split-screen test") {
