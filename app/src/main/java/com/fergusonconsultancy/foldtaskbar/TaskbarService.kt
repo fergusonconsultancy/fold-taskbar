@@ -37,7 +37,7 @@ import kotlin.math.abs
  *   brief gaps during app transitions never blink the bar.
  * - Reading the window list happens off the main thread, so touches never queue behind it.
  */
-class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
+class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, GridDrag,
     SharedPreferences.OnSharedPreferenceChangeListener, android.hardware.SensorEventListener {
 
     private lateinit var wm: WindowManager
@@ -83,7 +83,6 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     private val snapshots = object : LinkedHashMap<String, Bitmap>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 8
     }
-    private var snapFor: String? = null
 
     private var pendingOpen: String? = null
     private var pendingOpenAt = 0L
@@ -98,7 +97,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         getSystemService(android.hardware.SensorManager::class.java)?.let { sm ->
             sm.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE)?.let { sm.registerListener(this, it, android.hardware.SensorManager.SENSOR_DELAY_UI, main) }
         }
-        drawer = AppDrawer(this, wm, apps, onOpenApp = { pkg, v -> fromGrid(pkg, v) }, onHoldApp = { pkg, v -> openMenu(pkg, v) })
+        drawer = AppDrawer(this, wm, apps, onOpenApp = { pkg, v -> fromGrid(pkg, v) }, onHoldApp = { pkg, v -> openMenu(pkg, v) }, drag = this)
         // The bar now stays on the home screen too; only system surfaces such as the
         // notification shade push it aside.
         hidePackages = setOf("com.android.systemui")
@@ -256,7 +255,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         if (!::wm.isInitialized) return
         recordRecents()
         reportOpenTime()
-        scheduleSnapshot()
+        sampleSoon()
 
         if (!isMainScreen()) { vanish(); return }
         if (!shouldShow()) {
@@ -633,7 +632,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
                     if (moved) {
                         val along = if (upright) (lp.y + v.height / 2f) / s.height() else (lp.x + v.width / 2f) / s.width()
                         Prefs.setCollapsed(this, c.first to along)
-                        sampleBackdrop()
+                        sampleSoon(120)
                     } else if (e.actionMasked == MotionEvent.ACTION_UP) {
                         v.tick()
                         expand()
@@ -646,96 +645,81 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         tab = t
         t.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(if (morphTarget != null) 140 else 0)
             .setDuration(Curves.OPEN_MS).setInterpolator(Curves.OPEN).start()
-        sampleBackdrop()
-        main.removeCallbacks(resample)
-        main.postDelayed(resample, 2500)
+        sampleSoon(120)
     }
 
     private fun removeTab() {
-        main.removeCallbacks(resample)
         remove(tab); tab = null
     }
 
-    private val resample = object : Runnable {
-        override fun run() {
-            if (tab == null) return
-            sampleBackdrop()
-            main.postDelayed(this, 3000)
-        }
-    }
+    // ---- Reading the screen behind the bar ------------------------------------------
+    //
+    // One screenshot serves three needs: the tone of smoked glass behind each capsule, the
+    // tone of the collapsed tab, and Zoom's picture of the app you are in. Only small
+    // regions are read; the screenshot is thrown away at once, and only Zoom's reduced
+    // picture is kept, in memory. It runs after anything changes on screen and every two
+    // seconds while there is something to adapt, so scrolling a page re-tunes the glass.
 
-    /**
-     * Reads the brightness of the screen just around the tab and flips the tab to oppose
-     * it. Only a handful of pixels are read; the screenshot is discarded straight away.
-     */
-    private fun sampleBackdrop() {
-        val t = tab ?: return
-        val c = Prefs.collapsed(this) ?: return
-        val r = tabRect(c.first, c.second)
-        val s = screen()
-        val m = dp(28)
-        val area = Rect(r.left - m, r.top - m, r.right + m, r.bottom + m).apply { intersect(0, 0, s.width(), s.height()) }
-        if (area.isEmpty) return
-        runCatching {
-            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
-                override fun onSuccess(result: ScreenshotResult) {
-                    val hb = result.hardwareBuffer
-                    runCatching {
-                        val full = Bitmap.wrapHardwareBuffer(hb, result.colorSpace) ?: return@runCatching
-                        val soft = full.copy(Bitmap.Config.ARGB_8888, false)
-                        var sum = 0.0; var n = 0
-                        val step = dp(6).coerceAtLeast(1)
-                        var y = 0
-                        while (y < area.height()) {
-                                var x = 0
-                            while (x < area.width()) {
-                                // Skip the tab itself; only its surroundings matter
-                                val sx = area.left + x; val sy = area.top + y
-                                if (!r.contains(sx, sy) && sx < soft.width && sy < soft.height) {
-                                    val p = soft.getPixel(sx, sy)
-                                    sum += (0.2126 * ((p shr 16) and 255) + 0.7152 * ((p shr 8) and 255) + 0.0722 * (p and 255)) / 255.0
-                                    n++
-                                }
-                                x += step
-                            }
-                            y += step
-                        }
-                        soft.recycle(); full.recycle()
-                        if (n > 0) t.setBackdropLight(sum / n > 0.5)
-                    }
-                    hb.close()
-                }
-
-                override fun onFailure(errorCode: Int) {
-                    if (!loggedShotFailure) EventLog.add(this@TaskbarService, "Tab contrast: screen sample refused (code $errorCode); using the two-tone tab")
-                    loggedShotFailure = true
-                }
-            })
-        }.onFailure {
-            if (!loggedShotFailure) EventLog.add(this, "Tab contrast unavailable: ${it.javaClass.simpleName}; using the two-tone tab")
-            loggedShotFailure = true
-        }
-    }
-
+    private var lastShot = 0L
+    private var ticking = false
+    private var lastFront: String? = null
+    private var frontSince = 0L
+    private val snapshotAt = HashMap<String, Long>()
     private var loggedShotFailure = false
 
-    // ---- Zoom snapshots -------------------------------------------------------------
-
-    private val snap = Runnable { takeSnapshot() }
-
-    private fun scheduleSnapshot() {
-        if (Prefs.motion(this) != Motion.ZOOM) return
-        val alone = onScreen.filter { it !in noRecents }
-        val front = alone.singleOrNull()?.takeIf { it != packageName && onScreen.size == 1 } ?: return
-        if (front == snapFor) return
-        snapFor = front
-        main.removeCallbacks(snap)
-        main.postDelayed(snap, 900)
+    private val sampleOnce = Runnable { sampleNow() }
+    private val sampleTick = object : Runnable {
+        override fun run() {
+            if (!needsSampling()) { ticking = false; return }
+            sampleNow()
+            main.postDelayed(this, SAMPLE_EVERY_MS)
+        }
     }
 
-    private fun takeSnapshot() {
-        val pkg = snapFor ?: return
-        if (onScreen.singleOrNull() != pkg || !isMainScreen()) { snapFor = null; return }
+    /** Something changed on screen: read it again shortly, and keep reading while needed. */
+    private fun sampleSoon(delay: Long = 350) {
+        val front = onScreen.firstOrNull()
+        if (front != lastFront) { lastFront = front; frontSince = SystemClock.uptimeMillis() }
+        main.removeCallbacks(sampleOnce)
+        main.postDelayed(sampleOnce, delay)
+        if (!ticking && needsSampling()) { ticking = true; main.postDelayed(sampleTick, SAMPLE_EVERY_MS) }
+    }
+
+    private fun adaptiveGlass() = Prefs.finish(this) == Finish.SMOKE
+
+    private fun needsSampling(): Boolean {
+        if (folding || !::wm.isInitialized || !isMainScreen()) return false
+        val barShowing = hosts.any { it.visibility == View.VISIBLE && it.tag != "leaving" }
+        return (barShowing && adaptiveGlass()) || tab != null || snapshotWanted() != null
+    }
+
+    /** The app to picture for Zoom: alone on screen for a moment, not pictured recently. */
+    private fun snapshotWanted(): String? {
+        if (Prefs.motion(this) != Motion.ZOOM) return null
+        val front = onScreen.singleOrNull()?.takeIf { it !in noRecents && it != packageName } ?: return null
+        val now = SystemClock.uptimeMillis()
+        if (now - frontSince < 900) return null
+        return if (now - (snapshotAt[front] ?: 0L) > 15_000) front else null
+    }
+
+    private fun sampleNow() {
+        if (!needsSampling()) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastShot < 450) return
+        lastShot = now
+
+        // Decide what to read while the bar's layout is known, on this thread
+        val pad = dp(10)
+        val capsuleRects = if (adaptiveGlass()) hosts.mapIndexedNotNull { i, h ->
+            val lp = h.layoutParams as? WindowManager.LayoutParams ?: return@mapIndexedNotNull null
+            if (h.visibility != View.VISIBLE) null
+            else i to Rect(lp.x + pad, lp.y + pad, lp.x + h.width - pad, lp.y + h.height - pad)
+        } else emptyList()
+        val tabR = Prefs.collapsed(this)?.takeIf { tab != null }?.let { tabRect(it.first, it.second) }
+        val snapPkg = snapshotWanted()
+        val ring = dp(28)
+        val step = dp(6).coerceAtLeast(1)
+
         runCatching {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
                 override fun onSuccess(result: ScreenshotResult) {
@@ -745,20 +729,57 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
                             val full = Bitmap.wrapHardwareBuffer(hb, result.colorSpace) ?: return@runCatching
                             val soft = full.copy(Bitmap.Config.ARGB_8888, false)
                             full.recycle()
-                            val w = 540
-                            val small = Bitmap.createScaledBitmap(soft, w, (w * soft.height / soft.width.toFloat()).toInt(), true)
+                            val tones = capsuleRects.map { (i, r) -> Triple(i, averageAround(soft, r, ring, step), 0) }
+                            val tabTone = tabR?.let { averageAround(soft, it, ring, step) }
+                            val picture = snapPkg?.let { pkg ->
+                                val w = 540
+                                val small = Bitmap.createScaledBitmap(soft, w, (w * soft.height / soft.width.toFloat()).toInt(), true)
+                                // A private screen (banking, passwords) comes back black: never keep those
+                                if (isBlank(small)) { small.recycle(); null } else pkg to small
+                            }
                             soft.recycle()
-                            // A private screen (banking, passwords) comes back black: never use those
-                            if (!isBlank(small)) main.post { snapshots[pkg] = small } else small.recycle()
+                            main.post {
+                                tones.forEach { (i, avg, _) -> avg?.let { (colour, lum) -> capsules.getOrNull(i)?.adaptTo(colour, lum) } }
+                                tabTone?.let { (_, lum) -> tab?.setBackdropLight(lum > 0.5f) }
+                                picture?.let { (pkg, bmp) -> snapshots[pkg] = bmp; snapshotAt[pkg] = SystemClock.uptimeMillis() }
+                            }
                         }
                         hb.close()
                     }
                 }
-                override fun onFailure(errorCode: Int) = Unit
+
+                override fun onFailure(errorCode: Int) {
+                    if (!loggedShotFailure) EventLog.add(this@TaskbarService, "Screen reading refused (code $errorCode): glass and tab keep their default tones")
+                    loggedShotFailure = true
+                }
             })
+        }.onFailure {
+            if (!loggedShotFailure) EventLog.add(this, "Screen reading unavailable (${it.javaClass.simpleName}): turn Fold Taskbar off and on in Accessibility to grant it")
+            loggedShotFailure = true
         }
-        // Refresh while you stay in the app, so returning to it shows where you left it
-        main.postDelayed({ if (snapFor == pkg) { snapFor = null; scheduleSnapshot() } }, 15000)
+    }
+
+    /** Average colour and brightness of the band around [r], not including [r] itself. */
+    private fun averageAround(b: Bitmap, r: Rect, ring: Int, step: Int): Pair<Int, Float>? {
+        val area = Rect(r.left - ring, r.top - ring, r.right + ring, r.bottom + ring)
+        if (!area.intersect(0, 0, b.width, b.height)) return null
+        var rs = 0L; var gs = 0L; var bs = 0L; var n = 0
+        var y = area.top
+        while (y < area.bottom) {
+            var x = area.left
+            while (x < area.right) {
+                if (!r.contains(x, y)) {
+                    val p = b.getPixel(x, y)
+                    rs += (p shr 16) and 255; gs += (p shr 8) and 255; bs += p and 255; n++
+                }
+                x += step
+            }
+            y += step
+        }
+        if (n == 0) return null
+        val rr = (rs / n).toInt(); val gg = (gs / n).toInt(); val bb = (bs / n).toInt()
+        val lum = (0.2126f * rr + 0.7152f * gg + 0.0722f * bb) / 255f
+        return ((rr shl 16) or (gg shl 8) or bb) to lum
     }
 
     private fun isBlank(b: Bitmap): Boolean {
@@ -1058,12 +1079,27 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     override fun appAt(host: BarHost, x: Float, y: Float): String? =
         capsules.getOrNull(hosts.indexOf(host))?.appAt(x, y)?.first
 
-    override fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float) {
-        closePanels()
+    override fun isHandle(host: BarHost, x: Float, y: Float): Boolean =
+        capsules.getOrNull(hosts.indexOf(host))?.isHandle(x, y) == true
+
+    override fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float) = beginDrag(pkg, x, y)
+    override fun onGridDragStart(pkg: String, x: Float, y: Float) = beginDrag(pkg, x, y)
+    override fun onGridDrag(x: Float, y: Float) = onAppDrag(x, y)
+    override fun onGridDragEnd(x: Float, y: Float, cancelled: Boolean) = onAppDragEnd(x, y, cancelled)
+
+    /** An app has left the bar or the grid under your finger; show where it can land. */
+    private fun beginDrag(pkg: String, x: Float, y: Float) {
+        closeMenu()
         main.removeCallbacks(autoHideNow)
         dragFromCurrent = onScreen.firstOrNull { it !in noRecents }
-        val lp = host.layoutParams as WindowManager.LayoutParams
-        guide.start(apps.icon(pkg), x, y, (lp.y + dp(10)).toFloat())
+        // Letting go back over the bar cancels
+        val cancel = android.graphics.RectF()
+        hosts.filter { it.visibility == View.VISIBLE }.forEach { h ->
+            val lp = h.layoutParams as WindowManager.LayoutParams
+            val r = android.graphics.RectF(lp.x.toFloat(), lp.y.toFloat(), (lp.x + h.width).toFloat(), (lp.y + h.height).toFloat())
+            if (cancel.isEmpty) cancel.set(r) else cancel.union(r)
+        }
+        guide.start(apps.icon(pkg), x, y, cancel)
         draggedApp = pkg
     }
 
@@ -1080,12 +1116,13 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         guide.end()
         if (pkg == null) return
         val dragged = apps.entry(pkg)?.component ?: return
-        val other = splitPair()?.let { (l, r) -> if (zone == Drop.LEFT) r else l }?.takeIf { it != pkg }
+        val other = splitPair()?.let { (l, r) -> if (zone == Drop.LEFT || zone == Drop.TOP) r else l }?.takeIf { it != pkg }
             ?: dragFromCurrent?.takeIf { it != pkg }
         val otherComp = other?.let { apps.entry(it)?.component }
         when (zone) {
-            Drop.LEFT -> if (otherComp != null) startSplit(dragged, otherComp) else apps.open(pkg)
-            Drop.RIGHT -> if (otherComp != null) startSplit(otherComp, dragged) else apps.open(pkg)
+            // Left or top: the dragged app comes first. Right or bottom: second.
+            Drop.LEFT, Drop.TOP -> if (otherComp != null) startSplit(dragged, otherComp) else apps.open(pkg)
+            Drop.RIGHT, Drop.BOTTOM -> if (otherComp != null) startSplit(otherComp, dragged) else apps.open(pkg)
             Drop.POPUP -> {
                 val (px, py) = point ?: (screen().exactCenterX() to screen().exactCenterY())
                 apps.openPopup(pkg, screen(), px.toInt(), py.toInt())
@@ -1195,6 +1232,6 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
 
     companion object {
         @Volatile var running = false
-        private const val SPLIT_METHOD = "split_method"
+        private const val SAMPLE_EVERY_MS = 2000L
     }
 }

@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">Fold Taskbar</string>
-    <string name="service_description">Shows a taskbar along the bottom of the main screen. It watches which app is open and whether the keyboard is showing, so it can show your recent apps and step aside when you type. It does not read anything inside your apps. When the bar is collapsed to a tab, it checks the colour of the few pixels around the tab so the tab always stands out; nothing is saved.</string>
+    <string name="service_description">Shows a taskbar along the bottom of the main screen. It watches which app is open and whether the keyboard is showing, so it can show your recent apps and step aside when you type. It does not read anything inside your apps. It reads the colour of the screen just around the bar and the tab so they always contrast with what is behind them, and keeps a small picture of the app you are in for the Zoom transition. Nothing is saved or sent anywhere.</string>
 </resources>

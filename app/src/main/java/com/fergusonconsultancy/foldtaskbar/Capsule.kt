@@ -43,6 +43,16 @@ class Capsule(
     private val padY = context.dp(8)
     private val indicators = HashMap<String, View>()
     private val appViews = HashMap<View, String>()
+    private val dividers = mutableListOf<View>()
+    private var grid: GlyphView? = null
+
+    // The capsule's current colours. Smoked glass changes them to suit what is behind it.
+    private var fillNow = finish.fill
+    private var inkNow = finish.ink
+    private var edgeNow = finish.edge
+    private var lightNow = finish.indicator
+    private var lightBar: Boolean? = null
+    private var toneAnim: android.animation.ValueAnimator? = null
     private var current: List<Slot> = emptyList()
 
     init {
@@ -73,6 +83,67 @@ class Capsule(
             rebuild(slots)
         }
         setActive(active)
+    }
+
+    /** Whether a point on screen is on the grid button, the bar's handle. */
+    fun isHandle(x: Float, y: Float): Boolean {
+        val g = grid ?: return false
+        val loc = IntArray(2).also { g.getLocationOnScreen(it) }
+        return x >= loc[0] && x <= loc[0] + g.width && y >= loc[1] && y <= loc[1] + g.height
+    }
+
+    /**
+     * Smoked glass: given the average colour behind the capsule, turn dark over light
+     * content and light over dark content, borrowing a trace of the colour underneath so
+     * the glass belongs to what it sits on. The thresholds overlap, so mid-tones never
+     * make it flicker between the two.
+     */
+    fun adaptTo(behind: Int, luminance: Float) {
+        val light = when {
+            luminance < 0.36f -> true
+            luminance > 0.54f -> false
+            else -> lightBar ?: false
+        }
+        lightBar = light
+        val base = if (light) 0xF4F0E8 else 0x101412
+        val tint = if (light) 0.10f else 0.14f
+        fun ch(shift: Int) = ((((base shr shift) and 255) * (1 - tint)) + (((behind shr shift) and 255) * tint)).toInt()
+        val fill = ((if (light) 0xE8 else 0xDB) shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        val ink = if (light) 0xFF1A201C.toInt() else 0xFFEDEAE2.toInt()
+        val edge = if (light) 0x1F000000 else 0x1AFFFFFF
+        val glow = if (light) 0xFF8C6A33.toInt() else 0xFFD3B27C.toInt()
+        toneTo(fill, ink, edge, glow)
+    }
+
+    private fun toneTo(fill: Int, ink: Int, edge: Int, glow: Int) {
+        if (fill == fillNow && ink == inkNow && edge == edgeNow && glow == lightNow) return
+        val from = intArrayOf(fillNow, inkNow, edgeNow, lightNow)
+        val to = intArrayOf(fill, ink, edge, glow)
+        val ev = android.animation.ArgbEvaluator()
+        toneAnim?.cancel()
+        toneAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 320
+            interpolator = Curves.OPEN
+            addUpdateListener { a ->
+                val t = a.animatedFraction
+                paint(
+                    ev.evaluate(t, from[0], to[0]) as Int, ev.evaluate(t, from[1], to[1]) as Int,
+                    ev.evaluate(t, from[2], to[2]) as Int, ev.evaluate(t, from[3], to[3]) as Int,
+                )
+            }
+            start()
+        }
+    }
+
+    private fun paint(fill: Int, ink: Int, edge: Int, glow: Int) {
+        fillNow = fill; inkNow = ink; edgeNow = edge; lightNow = glow
+        (background as? android.graphics.drawable.GradientDrawable)?.apply {
+            setColor(fill)
+            setStroke(context.dp(1).coerceAtLeast(1), edge)
+        }
+        grid?.setInk(ink)
+        dividers.forEach { it.setBackgroundColor((ink and 0x00FFFFFF) or 0x30000000) }
+        indicators.values.forEach { (it.background as? android.graphics.drawable.GradientDrawable)?.setColor(glow) }
     }
 
     /** The app icon under a point on screen, for dragging an app out of the bar. */
@@ -122,9 +193,11 @@ class Capsule(
         removeAllViews()
         indicators.clear()
         appViews.clear()
+        dividers.clear()
+        grid = null
         slots.forEachIndexed { i, slot ->
             val v = when (slot) {
-                Slot.AllApps -> glyph(Glyph.GRID) { actions.onAllApps(it) }.apply {
+                Slot.AllApps -> glyph(Glyph.GRID) { actions.onAllApps(it) }.also { grid = it as GlyphView }.apply {
                     setOnLongClickListener { it.thud(); actions.onAllAppsHeld(it); true }
                 }
                 Slot.Divider -> View(context).apply {
@@ -132,13 +205,14 @@ class Capsule(
                     val thin = context.dp(1).coerceAtLeast(1)
                     val long = context.dp(iconDp * 0.6f)
                     layoutParams = if (vertical) LayoutParams(long, thin) else LayoutParams(thin, long)
-                }
+                }.also { dividers += it }
                 is Slot.App -> appIcon(slot)
                 is Slot.AppPair -> pairIcon(slot)
             }
             if (i > 0) (v.layoutParams as LayoutParams).apply { if (vertical) topMargin = gap else marginStart = gap }
             addView(v)
         }
+        paint(fillNow, inkNow, edgeNow, lightNow)
     }
 
     /** A pair: the left app up and to the left, the right app down and to the right. */
@@ -242,6 +316,12 @@ class GlyphView(context: Context, private val kind: Glyph, ink: Int) : View(cont
     private val r = RectF()
     private val path = Path()
     private var openness = 0f
+
+    fun setInk(c: Int) {
+        if (fill.color == c) return
+        fill.color = c; line.color = c
+        invalidate()
+    }
     private var anim: android.animation.ValueAnimator? = null
 
     /** 0 is closed, 1 is fully parted. The squares part as the grid they stand for opens. */

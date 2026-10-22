@@ -11,13 +11,16 @@ import android.view.View
 import android.view.WindowManager
 
 /** Where a dragged app will land if you let go now. */
-enum class Drop { LEFT, RIGHT, POPUP, NONE }
+enum class Drop { LEFT, RIGHT, TOP, BOTTOM, POPUP, NONE }
 
 /**
- * The guide shown while you drag an app out of the bar. Near the left or right edge the
- * half it will take is drawn as a panel, and the crease lights up between them; in the
- * middle, the pop-up window it will become is drawn under your finger. Over the bar,
- * nothing: letting go there cancels.
+ * The guide shown while you drag an app out of the bar or the grid. Towards any edge,
+ * the half it will take is drawn as a panel and the line the two halves will meet on
+ * lights up; in the centre, the pop-up window it will become is drawn under your finger.
+ * Over the bar, nothing: letting go there cancels.
+ *
+ * Android, not the app, decides whether a split is side by side or top and bottom. The
+ * half you choose decides which of the two apps comes first.
  *
  * The guide never takes touches; your finger stays with the bar that started the drag.
  */
@@ -27,9 +30,9 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
 
     val zone get() = view?.zone ?: Drop.NONE
 
-    fun start(icon: Drawable?, x: Float, y: Float, barTop: Float) {
+    fun start(icon: Drawable?, x: Float, y: Float, cancelArea: RectF) {
         end()
-        val v = GuideView(context, icon?.constantState?.newDrawable()?.mutate() ?: icon, barTop)
+        val v = GuideView(context, icon?.constantState?.newDrawable()?.mutate() ?: icon, cancelArea)
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -55,7 +58,7 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
     }
 
     @SuppressLint("ViewConstructor")
-    private class GuideView(context: Context, private val icon: Drawable?, private val barTop: Float) : View(context) {
+    private class GuideView(context: Context, private val icon: Drawable?, private val cancelArea: RectF) : View(context) {
         var zone = Drop.NONE
         var fx = 0f
         var fy = 0f
@@ -74,16 +77,22 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
             fx = x; fy = y
             val w = width.toFloat().takeIf { it > 0 } ?: context.resources.displayMetrics.widthPixels.toFloat()
             val h = height.toFloat().takeIf { it > 0 } ?: context.resources.displayMetrics.heightPixels.toFloat()
+            val pad = context.dp(24).toFloat()
+            val edgeX = minOf(x, w - x) / w
+            val edgeY = minOf(y, h - y) / h
             zone = when {
-                y > barTop - context.dp(24) -> Drop.NONE
-                x < w * 0.28f -> Drop.LEFT
-                x > w * 0.72f -> Drop.RIGHT
-                else -> Drop.POPUP
+                x > cancelArea.left - pad && x < cancelArea.right + pad &&
+                    y > cancelArea.top - pad && y < cancelArea.bottom + pad -> Drop.NONE
+                minOf(edgeX, edgeY) > 0.24f -> Drop.POPUP
+                edgeX <= edgeY -> if (x < w / 2) Drop.LEFT else Drop.RIGHT
+                else -> if (y < h / 2) Drop.TOP else Drop.BOTTOM
             }
             val m = context.dp(12).toFloat()
             when (zone) {
                 Drop.LEFT -> target.set(m, m, w / 2f - m, h - m)
                 Drop.RIGHT -> target.set(w / 2f + m, m, w - m, h - m)
+                Drop.TOP -> target.set(m, m, w - m, h / 2f - m)
+                Drop.BOTTOM -> target.set(m, h / 2f + m, w - m, h - m)
                 Drop.POPUP -> {
                     val pw = w * 0.62f; val ph = h * 0.62f
                     val cx = x.coerceIn(pw / 2, w - pw / 2); val cy = y.coerceIn(ph / 2, h - ph / 2)
@@ -111,12 +120,11 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
                 edge.alpha = (255 * panelAlpha).toInt()
                 canvas.drawRoundRect(shown, r, r, panel)
                 canvas.drawRoundRect(shown, r, r, edge)
-                if (zone == Drop.LEFT || zone == Drop.RIGHT) {
-                    // The crease lights up as the line the two halves will meet on
-                    crease.alpha = (230 * panelAlpha).toInt()
-                    crease.strokeWidth = context.dp(1.5f).toFloat()
-                    canvas.drawLine(width / 2f, 0f, width / 2f, height.toFloat(), crease)
-                }
+                crease.alpha = (230 * panelAlpha).toInt()
+                crease.strokeWidth = context.dp(1.5f).toFloat()
+                // The line the two halves will meet on lights up
+                if (zone == Drop.LEFT || zone == Drop.RIGHT) canvas.drawLine(width / 2f, 0f, width / 2f, height.toFloat(), crease)
+                if (zone == Drop.TOP || zone == Drop.BOTTOM) canvas.drawLine(0f, height / 2f, width.toFloat(), height / 2f, crease)
             }
 
             // The app itself, lifted under your finger

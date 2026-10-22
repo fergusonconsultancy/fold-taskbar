@@ -17,7 +17,8 @@ enum class Motion(val label: String) {
 enum class Shape(val label: String) { PAIR("Hinge pair"), CAPSULE("Capsule") }
 
 enum class Finish(val label: String, val fill: Int, val ink: Int, val edge: Int, val indicator: Int) {
-    SMOKE("Smoked glass", 0xDB121614.toInt(), 0xFFE6E8E2.toInt(), 0x14FFFFFF, 0xFFD3B27C.toInt()),
+    /** Smoked glass reads what is behind it and turns dark over light screens, light over dark. */
+    SMOKE("Smoked glass (adaptive)", 0xDB121614.toInt(), 0xFFE6E8E2.toInt(), 0x14FFFFFF, 0xFFD3B27C.toInt()),
     VISCONTI("Visconti", 0xF01A3F31.toInt(), 0xFFEFE6D3.toInt(), 0x73D3B27C, 0xFFD3B27C.toInt()),
     PAPER("Paper", 0xF2F6F4EE.toInt(), 0xFF1D2620.toInt(), 0x14000000, 0xFF1F4A3A.toInt()),
 }

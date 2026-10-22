@@ -7,11 +7,11 @@ A taskbar for the Galaxy Z Fold 8 Ultra's main screen that works with any launch
 - Pinned apps on the left, recent apps on the right, and an all-apps grid. Recent apps keep their place in the bar.
 - Tap an app to switch to it. Hold an app to open it in split screen, open it as a pop-up (experimental), pin, unpin or reorder it.
 - Shows everywhere on the main screen, home screen included. Hides on the cover screen, the lock screen and the notification shade, and steps aside for the keyboard only if the keyboard would cover it.
-- Movable: hold the bar and slide it anywhere. It docks to edges (upright on the sides) and centres on the crease when close to it.
+- Movable: hold the grid button (the bar's handle) and slide it anywhere. It docks to edges (upright on the sides) and centres on the crease when close to it.
 - Collapses to a high-contrast tab: throw it off an edge, or hold the grid button and choose Collapse to a tab. The tab samples the pixels around it and flips its tone to stand out.
-- Two shapes (Hinge pair, Capsule), three finishes (Smoked glass, Visconti, Paper), three icon sizes.
+- Two shapes (Hinge pair, Capsule), three finishes, three icon sizes. Smoked glass is adaptive: it reads what is behind it and turns dark over light content, light over dark, with a trace of the colour underneath.
 - App switching: Zoom (the app's last screen grows out of its icon and dissolves into the live app), Reveal, Grow or the system animation. A refused animation never stops an app opening.
-- Drag an app out of the bar: to the left or right edge for split screen on that side, to the middle for a pop-up where you let go.
+- Drag any app out of the bar (press and slide) or the grid (hold, then slide): towards the left, right, top or bottom half for split screen, the centre for a pop-up. Android decides whether the split is side by side or top and bottom; the half you choose decides which app comes first.
 - Vanishes the instant the phone starts to fold (hinge sensor), so it never lingers on the cover screen.
 - App pairs: hold an app and choose Pair with another app, or hold the grid button to save the two apps on screen as a pair. Pairs sit in the bar and open both apps in split screen.
 - Always showing by default, or auto-hide: swipe up where the bar sits to call it back. Hold the grid button to switch.

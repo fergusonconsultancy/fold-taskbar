@@ -14,6 +14,8 @@ import kotlin.math.hypot
 
 interface DragListener {
     fun onTouched()
+    /** Whether this screen point is on the bar's handle (the grid button). */
+    fun isHandle(host: BarHost, x: Float, y: Float): Boolean
     /** The app under this screen point in [host], if any. */
     fun appAt(host: BarHost, x: Float, y: Float): String?
     fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float)
@@ -25,16 +27,18 @@ interface DragListener {
 }
 
 /**
- * Holds one capsule in its window. Two gestures start here:
- * - Press an app and slide it straight out: the app comes with your finger, to drop as a
- *   split half or a pop-up.
- * - Hold anywhere until the bar lifts, then slide: the whole bar moves.
- * A quick tap or a hold without moving still reaches the icons as normal.
+ * Holds one capsule in its window. Two gestures start here, each from its own place:
+ * - Press any app and slide: the app comes with your finger straight away, to drop as a
+ *   split half or a pop-up. No hold needed, so a pause before sliding cannot turn it
+ *   into something else.
+ * - Hold the grid button, the bar's handle, until the bar lifts, then slide: the whole
+ *   bar moves. Let go without sliding and the grid button's menu stays open.
+ * A quick tap still reaches the icons as normal.
  */
 @SuppressLint("ViewConstructor")
 class BarHost(context: Context, private val listener: DragListener) : FrameLayout(context) {
 
-    private val slop = ViewConfiguration.get(context).scaledTouchSlop * 1.5f
+    private val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val holdMs = ViewConfiguration.getLongPressTimeout().toLong()
     private var downX = 0f
     private var downY = 0f
@@ -62,7 +66,7 @@ class BarHost(context: Context, private val listener: DragListener) : FrameLayou
                 listener.onTouched()
                 downX = ev.rawX; downY = ev.rawY
                 armed = false; dragging = false; appDrag = null
-                postDelayed(arm, holdMs)
+                if (listener.isHandle(this, downX, downY)) postDelayed(arm, holdMs)
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.rawX - downX
@@ -71,7 +75,7 @@ class BarHost(context: Context, private val listener: DragListener) : FrameLayou
                 if (appDrag != null) { listener.onAppDrag(ev.rawX, ev.rawY); return true }
                 if (hypot(dx, dy) > slop) {
                     if (!armed) {
-                        val pkg = listener.appAt(this, downX, downY)
+                        val pkg = listener.appAt(this, downX, downY)?.takeIf { !listener.isHandle(this, downX, downY) }
                         if (pkg != null) {
                             removeCallbacks(arm)
                             appDrag = pkg

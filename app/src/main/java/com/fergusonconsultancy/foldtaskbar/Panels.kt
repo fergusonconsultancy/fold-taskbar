@@ -58,6 +58,13 @@ class ActionMenu(
     }
 }
 
+/** The grid's side of dragging an app out; the bar's side is [BarHost]. */
+interface GridDrag {
+    fun onGridDragStart(pkg: String, x: Float, y: Float)
+    fun onGridDrag(x: Float, y: Float)
+    fun onGridDragEnd(x: Float, y: Float, cancelled: Boolean)
+}
+
 /** Motion curves from the charter: open lands gently, close leaves quickly. */
 object Curves {
     val OPEN = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
@@ -76,7 +83,50 @@ class AppDrawer(
     private val apps: Apps,
     private val onOpenApp: (String, View) -> Unit,
     private val onHoldApp: (String, View) -> Unit,
+    private val drag: GridDrag,
 ) {
+    // Dragging an app out of the grid: hold it, then slide. A plain slide scrolls the grid.
+    private var armedPkg: String? = null
+    private var draggingApp = false
+    private var downX = 0f
+    private var downY = 0f
+    private val dragSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+
+    private val dragOut = object : RecyclerView.SimpleOnItemTouchListener() {
+        override fun onInterceptTouchEvent(rv: RecyclerView, e: android.view.MotionEvent): Boolean {
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; armedPkg = null; draggingApp = false }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val pkg = armedPkg
+                    if (pkg != null && hypot((e.rawX - downX).toDouble(), (e.rawY - downY).toDouble()) > dragSlop) {
+                        draggingApp = true
+                        // The grid steps out of the way, leaving the app under your finger
+                        panelHost?.animate()?.alpha(0f)?.setDuration(140)?.start()
+                        scrim?.animate()?.alpha(0f)?.setDuration(140)?.start()
+                        drag.onGridDragStart(pkg, e.rawX, e.rawY)
+                        return true
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> armedPkg = null
+            }
+            return false
+        }
+
+        override fun onTouchEvent(rv: RecyclerView, e: android.view.MotionEvent) {
+            if (!draggingApp) return
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_MOVE -> drag.onGridDrag(e.rawX, e.rawY)
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    draggingApp = false
+                    armedPkg = null
+                    drag.onGridDragEnd(e.rawX, e.rawY, e.actionMasked == android.view.MotionEvent.ACTION_CANCEL)
+                    close(animated = false)
+                }
+            }
+        }
+    }
+
+
     private var scrim: View? = null
     private var panelHost: FrameLayout? = null
     private var panel: LinearLayout? = null
@@ -118,6 +168,7 @@ class AppDrawer(
             isVerticalScrollBarEnabled = false
             setHasFixedSize(true)
             setItemViewCacheSize(columns * 2)
+            addOnItemTouchListener(dragOut)
         }
         panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -171,6 +222,7 @@ class AppDrawer(
         // Rule 5: the button answers first, in the same frame.
         from?.animateOpen(1f, Curves.OPEN_MS, Curves.OPEN)
 
+        host.alpha = 1f
         s.visibility = View.VISIBLE
         s.animate().alpha(1f).setDuration(240).setInterpolator(Curves.OPEN).start()
 
@@ -217,6 +269,7 @@ class AppDrawer(
 
     private fun hideNow(host: View) {
         host.visibility = View.INVISIBLE
+        host.alpha = 1f
         grid?.scrollToPosition(0)
     }
 
@@ -311,7 +364,7 @@ class AppDrawer(
             h.label.text = app.label
             h.itemView.contentDescription = app.label
             h.itemView.setOnClickListener { it.tick(); onOpenApp(app.pkg, h.icon) }
-            h.itemView.setOnLongClickListener { it.thud(); onHoldApp(app.pkg, it); true }
+            h.itemView.setOnLongClickListener { it.thud(); armedPkg = app.pkg; onHoldApp(app.pkg, it); true }
         }
     }
 
