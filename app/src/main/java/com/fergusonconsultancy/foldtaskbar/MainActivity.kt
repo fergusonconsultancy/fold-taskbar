@@ -113,6 +113,9 @@ class MainActivity : Activity() {
         }
         root.addView(logText)
         root.addView(button("Clear log") { EventLog.clear(this); refresh() })
+        root.addView(choice({ if (Prefs.systemDrag(this)) "Dragging apps: Android's own split zones (experimental)" else "Dragging apps: Fold Taskbar's guide" }) {
+            Prefs.setSystemDrag(this, !Prefs.systemDrag(this))
+        })
         root.addView(button("Run the split-screen test") {
             val svc = TaskbarService.instance
             if (svc == null) {

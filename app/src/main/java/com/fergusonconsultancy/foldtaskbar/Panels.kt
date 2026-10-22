@@ -140,6 +140,9 @@ class AppDrawer(
     var isOpen = false
         private set
 
+    /** The view a system drag can start from while a grid drag is underway. */
+    val dragSource: View? get() = grid
+
     /** Builds the windows for this size and finish. Cheap to call: does nothing if unchanged. */
     /** [fromTop] places the grid below a bar near the top; otherwise above a bar near the bottom. */
     fun attach(finish: Finish, widthPx: Int, heightPx: Int, offsetPx: Int, fromTop: Boolean) {

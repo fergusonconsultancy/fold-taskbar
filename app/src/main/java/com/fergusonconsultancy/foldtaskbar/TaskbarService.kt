@@ -1221,8 +1221,81 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     override fun isHandle(host: BarHost, x: Float, y: Float): Boolean =
         capsules.getOrNull(hosts.indexOf(host))?.isHandle(x, y) == true
 
-    override fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float) = beginDrag(pkg, x, y)
-    override fun onGridDragStart(pkg: String, x: Float, y: Float) = beginDrag(pkg, x, y)
+    override fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float) {
+        if (systemDrag(host, pkg)) return
+        beginDrag(pkg, x, y)
+    }
+
+    override fun onGridDragStart(pkg: String, x: Float, y: Float) {
+        val src = drawer.dragSource
+        if (src != null && systemDrag(src, pkg)) { drawer.close(animated = false); return }
+        beginDrag(pkg, x, y)
+    }
+
+    /** True while Android, not the bar, is carrying a dragged app. */
+    private var systemDragging = false
+
+    /**
+     * Samsung's taskbar and Google's launcher do not open a dragged app themselves: they
+     * hand Android an "app" drag, and Android's own split-screen drop zones take over and
+     * open a true split where you let go. This tries the same. If One UI refuses it from
+     * an app that is not the launcher, the bar says so once, switches the experiment off,
+     * and uses its own guide instead.
+     */
+    private fun systemDrag(from: View, pkg: String): Boolean {
+        if (!Prefs.systemDrag(this)) return false
+        val e = apps.entry(pkg) ?: return false
+        val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(e.component)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val pi = android.app.PendingIntent.getActivity(this, pkg.hashCode(), launch,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
+        val data = Intent()
+            .putExtra("android.intent.extra.PENDING_INTENT", pi)
+            .putExtra(Intent.EXTRA_USER, android.os.Process.myUserHandle())
+            .putExtra(Intent.EXTRA_PACKAGE_NAME, pkg)
+        val clip = android.content.ClipData(
+            android.content.ClipDescription(e.label, arrayOf(android.content.ClipDescription.MIMETYPE_APPLICATION_ACTIVITY)),
+            android.content.ClipData.Item(data),
+        )
+        val icon = apps.icon(pkg)
+        val size = dp(64)
+        val shadow = object : View.DragShadowBuilder(from) {
+            override fun onProvideShadowMetrics(outShadowSize: android.graphics.Point, outShadowTouchPoint: android.graphics.Point) {
+                outShadowSize.set(size, size); outShadowTouchPoint.set(size / 2, size / 2)
+            }
+            override fun onDrawShadow(canvas: android.graphics.Canvas) {
+                icon?.let { it.setBounds(0, 0, size, size); it.draw(canvas) }
+            }
+        }
+        var flags = View.DRAG_FLAG_GLOBAL or View.DRAG_FLAG_OPAQUE
+        if (android.os.Build.VERSION.SDK_INT >= 34) flags = flags or View.DRAG_FLAG_START_INTENT_SENDER_ON_UNHANDLED_DRAG
+        val started = runCatching { from.startDragAndDrop(clip, shadow, null, flags) }
+        val ok = started.getOrDefault(false)
+        if (!ok) {
+            Prefs.setSystemDrag(this, false)
+            EventLog.add(this, "Android's split drop zones: refused (${started.exceptionOrNull()?.javaClass?.simpleName ?: "not started"}). Using the bar's own guide")
+            return false
+        }
+        systemDragging = true
+        closeMenu()
+        // Hear how the drag ended, wherever it was dropped
+        from.setOnDragListener { _, ev ->
+            if (ev.action == android.view.DragEvent.ACTION_DRAG_ENDED) {
+                from.setOnDragListener(null)
+                val handled = ev.result
+                main.postDelayed({
+                    bg.post {
+                        scanWindows()
+                        val names = onScreen.joinToString(" + ") { apps.entry(it)?.label ?: it }
+                        main.post { EventLog.add(this, "System drag ended (${if (handled) "Android opened it" else "not taken"}); on screen: $names") }
+                    }
+                }, 1500)
+            }
+            true
+        }
+        EventLog.add(this, "Android's split drop zones: drag handed over for ${e.label}")
+        return true
+    }
     override fun onGridDrag(x: Float, y: Float) = onAppDrag(x, y)
     override fun onGridDragEnd(x: Float, y: Float, cancelled: Boolean) = onAppDragEnd(x, y, cancelled)
 
@@ -1244,10 +1317,15 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     private var draggedApp: String? = null
 
-    override fun onAppDrag(x: Float, y: Float) { guide.move(x, y) }
+    override fun onAppDrag(x: Float, y: Float) { if (!systemDragging) guide.move(x, y) }
 
     /** Left or right: split with the app on screen. Middle: a pop-up where you let go. */
     override fun onAppDragEnd(x: Float, y: Float, cancelled: Boolean) {
+        if (systemDragging) {
+            // Android carries it from here; its drop zones decide what opens where
+            systemDragging = false
+            return
+        }
         val pkg = draggedApp
         draggedApp = null
         val zone = if (cancelled) Drop.NONE else guide.zone

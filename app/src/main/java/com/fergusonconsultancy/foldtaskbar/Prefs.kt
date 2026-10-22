@@ -78,6 +78,10 @@ object Prefs {
     }.apply()
 
     /** How an app arrives when you switch to it. */
+    /** Experimental: hand dragged apps to Android's own split-screen drop zones. */
+    fun systemDrag(c: Context) = of(c).getBoolean("system_drag", true)
+    fun setSystemDrag(c: Context, v: Boolean) = of(c).edit().putBoolean("system_drag", v).apply()
+
     fun motion(c: Context) = runCatching { Motion.valueOf(of(c).getString(MOTION, null)!!) }.getOrDefault(Motion.ZOOM)
     fun setMotion(c: Context, v: Motion) = of(c).edit().putString(MOTION, v.name).apply()
 
