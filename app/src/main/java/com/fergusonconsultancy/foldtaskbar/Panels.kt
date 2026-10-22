@@ -75,8 +75,8 @@ object Curves {
     const val CLOSE_MS = 180L
 }
 
-private const val POUR_MS = 560L
-private const val DRAIN_MS = 240L
+private const val POUR_MS = 380L
+private const val DRAIN_MS = 220L
 
 /**
  * The all-apps grid. Built and attached once, invisible until called, so opening it is
@@ -321,14 +321,14 @@ class AppDrawer(
             val d = hypot(dx.toDouble(), dy.toDouble()).toFloat()
             c.animate().cancel()
             c.alpha = 0f
-            c.scaleX = 0.45f; c.scaleY = 0.45f
+            c.scaleX = 0.82f; c.scaleY = 0.82f
             // Each icon starts a little closer to where the liquid came from
-            c.translationX = -dx * 0.12f; c.translationY = -dy * 0.12f
+            c.translationX = -dx * 0.06f; c.translationY = -dy * 0.06f
             c.animate()
                 .alpha(1f).scaleX(1f).scaleY(1f).translationX(0f).translationY(0f)
-                .setStartDelay((70 + d / far * 260).toLong())
-                .setDuration(420)
-                .setInterpolator(android.view.animation.OvershootInterpolator(1.6f))
+                .setStartDelay((40 + d / far * 160).toLong())
+                .setDuration(300)
+                .setInterpolator(Curves.OPEN)
                 .start()
         }
     }
@@ -361,25 +361,21 @@ class AppDrawer(
     }
 
     /**
-     * The panel's glass, drawn as a liquid. At progress 0 it is a drop at [origin]; as it
-     * rises, the edge facing away from the bar surges ahead on a soft spring while the
-     * sides follow, so a column climbs out of the button and then spreads into the panel,
-     * its corners relaxing from round to the panel's radius. A neck joins it to the drop
-     * until the panel has filled out. Content is clipped to the same shape.
+     * The panel's glass. At progress 0 it is the grid button's own outline at [origin]; it
+     * fades in as it lifts away and opens into the panel, corners relaxing from round to the
+     * panel's radius. Content is clipped to the same shape.
      */
     private inner class LiquidPanel(private val finish: Finish) : FrameLayout(context) {
         var origin = android.graphics.RectF()
         var progress = 1f
         val inset = context.dp(10).toFloat()
         private val path = android.graphics.Path()
-        private val extra = android.graphics.Path()
         private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = finish.fill }
         private val edge = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             style = android.graphics.Paint.Style.STROKE; color = finish.edge; strokeWidth = context.dp(1).toFloat()
         }
         private val shade = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0x33000000 }
         private val r = android.graphics.RectF()
-        private val surge = android.view.animation.OvershootInterpolator(0.9f)
 
         init { setWillNotDraw(false); clipChildren = true }
 
@@ -387,59 +383,24 @@ class AppDrawer(
             val p = getChildAt(0) ?: return
             val full = android.graphics.RectF(p.left.toFloat(), p.top.toFloat(), p.right.toFloat(), p.bottom.toFloat())
             val t = progress.coerceIn(0f, 1f)
-            // Far edge leads on a spring; the sides follow a beat behind
-            val lead = surge.getInterpolation((t / 0.8f).coerceAtMost(1f))
-            val spread = Curves.OPEN.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
-            val near = minOf(spread * 1.2f, 1f)
+            // One clean shape lifts off the grid button and opens into the panel. Every edge
+            // rides the same curve; the far edge runs a step ahead and the near edge a step
+            // behind, which is all the "pour" there is. No drop, no neck, no overshoot.
+            val far = Curves.OPEN.getInterpolation((t * 1.12f).coerceAtMost(1f))
+            val near = Curves.OPEN.getInterpolation(((t - 0.08f) / 0.92f).coerceIn(0f, 1f))
+            val cross = Curves.OPEN.getInterpolation(((t - 0.03f) / 0.97f).coerceIn(0f, 1f))
             fun mix(a: Float, b: Float, f: Float) = a + (b - a) * f
-            // The far edge leads, the near edge (at the bar) follows, the cross edges spread
-            r.left = mix(origin.left, full.left, when (side) { Side.RIGHT -> lead; Side.LEFT -> near; else -> spread })
-            r.right = mix(origin.right, full.right, when (side) { Side.LEFT -> lead; Side.RIGHT -> near; else -> spread })
-            r.top = mix(origin.top, full.top, when (side) { Side.BOTTOM -> lead; Side.TOP -> near; else -> spread })
-            r.bottom = mix(origin.bottom, full.bottom, when (side) { Side.TOP -> lead; Side.BOTTOM -> near; else -> spread })
-            val radius = (origin.width() / 2f) + (context.dp(26) - origin.width() / 2f) * spread
+            r.left = mix(origin.left, full.left, when (side) { Side.RIGHT -> far; Side.LEFT -> near; else -> cross })
+            r.right = mix(origin.right, full.right, when (side) { Side.LEFT -> far; Side.RIGHT -> near; else -> cross })
+            r.top = mix(origin.top, full.top, when (side) { Side.BOTTOM -> far; Side.TOP -> near; else -> cross })
+            r.bottom = mix(origin.bottom, full.bottom, when (side) { Side.TOP -> far; Side.BOTTOM -> near; else -> cross })
+            val radius = mix(origin.width() / 2f, context.dp(26).toFloat(), cross)
 
             path.reset()
             path.addRoundRect(r, radius, radius, android.graphics.Path.Direction.CW)
-            // The drop on the grid button empties into the panel through a pinched neck,
-            // and fills again when the panel drains back into it
-            val left = 1f - spread
-            if (left > 0.02f && t < 1f) {
-                val cx = origin.centerX(); val cy = origin.centerY()
-                val drop = origin.width() / 2f * (0.35f + 0.65f * left)
-                extra.reset()
-                extra.addCircle(cx, cy, drop, android.graphics.Path.Direction.CW)
-                path.op(extra, android.graphics.Path.Op.UNION)
-                extra.reset()
-                val top = origin.width() * 0.5f * left
-                val foot = drop * 0.8f
-                val waist = minOf(top, foot) * 0.45f
-                if (!sideways) {
-                    val nearY = if (fromTop) r.top else r.bottom
-                    val gapping = if (fromTop) nearY < cy else nearY > cy
-                    if (!gapping) {
-                        val midY = (nearY + cy) / 2f
-                        extra.moveTo(cx - top, nearY)
-                        extra.quadTo(cx - waist, midY, cx - foot, cy)
-                        extra.lineTo(cx + foot, cy)
-                        extra.quadTo(cx + waist, midY, cx + top, nearY)
-                        extra.close()
-                    }
-                } else {
-                    val nearX = if (side == Side.LEFT) r.left else r.right
-                    val gapping = if (side == Side.LEFT) nearX < cx else nearX > cx
-                    if (!gapping) {
-                        val midX = (nearX + cx) / 2f
-                        extra.moveTo(nearX, cy - top)
-                        extra.quadTo(midX, cy - waist, cx, cy - foot)
-                        extra.lineTo(cx, cy + foot)
-                        extra.quadTo(midX, cy + waist, nearX, cy + top)
-                        extra.close()
-                    }
-                }
-                // Joined as one body, so the overlaps never cancel out
-                path.op(extra, android.graphics.Path.Op.UNION)
-            }
+            // The glass fades in as it leaves the button, so nothing dark ever sits on it
+            val a = (t / 0.22f).coerceAtMost(1f)
+            val layer = if (a < 1f) canvas.saveLayerAlpha(null, (a * 255).toInt()) else -1
             canvas.save(); canvas.translate(0f, context.dp(3).toFloat()); canvas.drawPath(path, shade); canvas.restore()
             canvas.drawPath(path, fill)
             canvas.drawPath(path, edge)
@@ -447,6 +408,7 @@ class AppDrawer(
             canvas.clipPath(path)
             super.dispatchDraw(canvas)
             canvas.restore()
+            if (layer >= 0) canvas.restoreToCount(layer)
         }
     }
 
