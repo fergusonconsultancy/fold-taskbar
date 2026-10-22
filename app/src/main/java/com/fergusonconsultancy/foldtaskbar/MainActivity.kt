@@ -76,8 +76,9 @@ class MainActivity : Activity() {
         root.addView(choice({ if (Prefs.autoHide(this)) "Auto-hide: on" else "Auto-hide: off (always showing)" }) {
             Prefs.setAutoHide(this, !Prefs.autoHide(this))
         })
-        root.addView(choice({ if (Prefs.depth(this)) "App switching: Depth" else "App switching: system animation" }) {
-            Prefs.setDepth(this, !Prefs.depth(this))
+        root.addView(choice({ "App switching: ${Prefs.motion(this).label}" }) {
+            val all = Motion.entries
+            Prefs.setMotion(this, all[(all.indexOf(Prefs.motion(this)) + 1) % all.size])
         })
         root.addView(button("Put the taskbar back at the bottom") {
             Prefs.resetSpots(this); refresh()
@@ -132,7 +133,7 @@ class MainActivity : Activity() {
                 }
             )
             append("App switching: ")
-            append(if (Prefs.depth(this@MainActivity)) "Depth" else "system animation")
+            append(Prefs.motion(this@MainActivity).name.lowercase())
         }
         choiceButtons.forEach { (b, label) -> b.text = label() }
         logText.text = EventLog.read(this)

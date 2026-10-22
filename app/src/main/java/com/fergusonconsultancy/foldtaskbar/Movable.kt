@@ -14,15 +14,22 @@ import kotlin.math.hypot
 
 interface DragListener {
     fun onTouched()
+    /** The app under this screen point in [host], if any. */
+    fun appAt(host: BarHost, x: Float, y: Float): String?
+    fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float)
+    fun onAppDrag(x: Float, y: Float)
+    fun onAppDragEnd(x: Float, y: Float, cancelled: Boolean)
     fun onDragStart(host: BarHost)
     fun onDrag(host: BarHost, dx: Float, dy: Float)
     fun onDragEnd(host: BarHost)
 }
 
 /**
- * Holds one capsule in its window. Hold anywhere on the capsule and the bar lifts; keep
- * holding and slide to carry it, the same way you move a pop-up window. A quick tap or a
- * hold without moving still reaches the icons as normal.
+ * Holds one capsule in its window. Two gestures start here:
+ * - Press an app and slide it straight out: the app comes with your finger, to drop as a
+ *   split half or a pop-up.
+ * - Hold anywhere until the bar lifts, then slide: the whole bar moves.
+ * A quick tap or a hold without moving still reaches the icons as normal.
  */
 @SuppressLint("ViewConstructor")
 class BarHost(context: Context, private val listener: DragListener) : FrameLayout(context) {
@@ -34,6 +41,7 @@ class BarHost(context: Context, private val listener: DragListener) : FrameLayou
     private var armed = false
     var dragging = false
         private set
+    private var appDrag: String? = null
 
     private val arm = Runnable {
         armed = true
@@ -53,14 +61,28 @@ class BarHost(context: Context, private val listener: DragListener) : FrameLayou
             MotionEvent.ACTION_DOWN -> {
                 listener.onTouched()
                 downX = ev.rawX; downY = ev.rawY
-                armed = false; dragging = false
+                armed = false; dragging = false; appDrag = null
                 postDelayed(arm, holdMs)
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.rawX - downX
                 val dy = ev.rawY - downY
                 if (dragging) { listener.onDrag(this, dx, dy); return true }
+                if (appDrag != null) { listener.onAppDrag(ev.rawX, ev.rawY); return true }
                 if (hypot(dx, dy) > slop) {
+                    if (!armed) {
+                        val pkg = listener.appAt(this, downX, downY)
+                        if (pkg != null) {
+                            removeCallbacks(arm)
+                            appDrag = pkg
+                            performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
+                            val cancel = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
+                            super.dispatchTouchEvent(cancel)
+                            cancel.recycle()
+                            listener.onAppDragStart(this, pkg, ev.rawX, ev.rawY)
+                            return true
+                        }
+                    }
                     if (armed) {
                         dragging = true
                         performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
@@ -78,8 +100,13 @@ class BarHost(context: Context, private val listener: DragListener) : FrameLayou
                 removeCallbacks(arm)
                 if (armed) animate().scaleX(1f).scaleY(1f).setDuration(160).setInterpolator(Curves.OPEN).start()
                 val wasDragging = dragging
-                armed = false; dragging = false
+                val wasApp = appDrag
+                armed = false; dragging = false; appDrag = null
                 if (wasDragging) { listener.onDragEnd(this); return true }
+                if (wasApp != null) {
+                    listener.onAppDragEnd(ev.rawX, ev.rawY, ev.actionMasked == MotionEvent.ACTION_CANCEL)
+                    return true
+                }
             }
         }
         return super.dispatchTouchEvent(ev)

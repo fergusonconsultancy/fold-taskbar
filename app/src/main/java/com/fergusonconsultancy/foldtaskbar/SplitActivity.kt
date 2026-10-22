@@ -34,6 +34,7 @@ class SplitActivity : Activity() {
     private var right: ComponentName? = null
     private var left: ComponentName? = null
     private var asked = false
+    private var method = 0
     private var handedOver = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,6 +42,7 @@ class SplitActivity : Activity() {
         @Suppress("DEPRECATION") overridePendingTransition(0, 0)
         @Suppress("DEPRECATION") right = intent.getParcelableExtra(EXTRA_RIGHT)
         @Suppress("DEPRECATION") left = intent.getParcelableExtra(EXTRA_LEFT)
+        method = intent.getIntExtra(EXTRA_METHOD, 0)
         val r = right ?: run { finish(); return }
         EventLog.add(this, "Split step 1: stepping stone open")
         val apps = Apps(this)
@@ -82,13 +84,34 @@ class SplitActivity : Activity() {
         EventLog.add(this, "Split step 3: screen split")
         val l = left
         if (l == null) { finishQuietly(); return }
+        // Let the split finish settling before the left half changes hands. Too soon, and
+        // One UI treated the left app as a separate full-screen launch.
         main.postDelayed({
-            // Launched from inside the split, the left-hand app takes this screen's half
-            runCatching { startActivity(launcher(l).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                .onSuccess { EventLog.add(this, "Split step 4: handed this half to ${l.packageName}") }
-                .onFailure { EventLog.add(this, "Split step 4 failed: ${it.javaClass.simpleName}") }
-            main.postDelayed(::finishQuietly, 400)
-        }, 120)
+            runCatching { handOver(l) }
+                .onSuccess { EventLog.add(this, "Split step 4: handed this half to ${l.packageName} (${HANDOVERS[method]})") }
+                .onFailure { EventLog.add(this, "Split step 4 failed (${HANDOVERS[method]}): ${it.javaClass.simpleName}") }
+            main.postDelayed(::finishQuietly, 700)
+        }, 600)
+    }
+
+    /**
+     * The left half has to go to the app you were using. One UI does not accept the
+     * obvious way (relaunching it), so there are three, tried in turn until one works:
+     * relaunch it; relaunch it asking for a split-screen window; or open it inside this
+     * screen's own window stack, which keeps it in this half by construction.
+     */
+    private fun handOver(l: ComponentName) {
+        when (method) {
+            0 -> startActivity(launcher(l).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            1 -> {
+                val o = android.app.ActivityOptions.makeBasic()
+                org.lsposed.hiddenapibypass.HiddenApiBypass.invoke(
+                    android.app.ActivityOptions::class.java, o, "setLaunchWindowingMode", WINDOWING_MODE_MULTI_WINDOW,
+                )
+                startActivity(launcher(l).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), o.toBundle())
+            }
+            else -> startActivity(launcher(l))
+        }
     }
 
     private fun finishQuietly() {
@@ -142,13 +165,17 @@ class SplitActivity : Activity() {
     companion object {
         const val EXTRA_RIGHT = "right"
         const val EXTRA_LEFT = "left"
+        const val EXTRA_METHOD = "method"
+        private const val WINDOWING_MODE_MULTI_WINDOW = 6
+        val HANDOVERS = listOf("relaunch", "split-window request", "inside the stepping stone", "two pop-ups")
         private const val ASK_AFTER_MS = 260L
         private const val GIVE_UP_MS = 1600L
 
-        fun intent(context: Context, left: ComponentName?, right: ComponentName) =
+        fun intent(context: Context, left: ComponentName?, right: ComponentName, method: Int) =
             Intent(context, SplitActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 .putExtra(EXTRA_LEFT, left)
                 .putExtra(EXTRA_RIGHT, right)
+                .putExtra(EXTRA_METHOD, method)
     }
 }

@@ -3,6 +3,17 @@ package com.fergusonconsultancy.foldtaskbar
 import android.content.Context
 import android.content.SharedPreferences
 
+/**
+ * The ways Android lets an ordinary app shape a switch between apps. Anything richer is
+ * reserved for the system (Depth asked for it, and One UI refused).
+ */
+enum class Motion(val label: String) {
+    ZOOM("Zoom: the app's last screen grows out of its icon"),
+    REVEAL("Reveal: the app opens out from its icon"),
+    GROW("Grow: the app scales up from its icon"),
+    SYSTEM("System animation"),
+}
+
 enum class Shape(val label: String) { PAIR("Hinge pair"), CAPSULE("Capsule") }
 
 enum class Finish(val label: String, val fill: Int, val ink: Int, val edge: Int, val indicator: Int) {
@@ -22,7 +33,8 @@ object Prefs {
     private const val RECENTS = "recents"
     private const val TRAY = "tray"
     private const val AUTO_HIDE = "auto_hide"
-    private const val DEPTH = "depth"
+    private const val MOTION = "motion"
+    private const val HANDOVER = "handover"
     private const val PAIRS = "pairs"
     private const val COLLAPSED = "collapsed"
 
@@ -64,9 +76,13 @@ object Prefs {
         if (v == null) remove(COLLAPSED) else putString(COLLAPSED, "${v.first},${v.second}")
     }.apply()
 
-    /** The Depth app-switch transition; off means the plain system animation. */
-    fun depth(c: Context) = of(c).getBoolean(DEPTH, true)
-    fun setDepth(c: Context, v: Boolean) = of(c).edit().putBoolean(DEPTH, v).apply()
+    /** How an app arrives when you switch to it. */
+    fun motion(c: Context) = runCatching { Motion.valueOf(of(c).getString(MOTION, null)!!) }.getOrDefault(Motion.ZOOM)
+    fun setMotion(c: Context, v: Motion) = of(c).edit().putString(MOTION, v.name).apply()
+
+    /** Which way of filling the left half of a split last worked (see SplitActivity). */
+    fun handover(c: Context) = of(c).getInt(HANDOVER, 0)
+    fun setHandover(c: Context, v: Int) = of(c).edit().putInt(HANDOVER, v).apply()
 
     /** App pairs, left app first. */
     fun pairs(c: Context): List<Pair<String, String>> = list(c, PAIRS)

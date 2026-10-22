@@ -38,7 +38,7 @@ import kotlin.math.abs
  * - Reading the window list happens off the main thread, so touches never queue behind it.
  */
 class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
-    SharedPreferences.OnSharedPreferenceChangeListener {
+    SharedPreferences.OnSharedPreferenceChangeListener, android.hardware.SensorEventListener {
 
     private lateinit var wm: WindowManager
     private lateinit var apps: Apps
@@ -74,6 +74,17 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     private var hidePackages: Set<String> = emptySet()
     private var noRecents: Set<String> = emptySet()
 
+    /** Folding: true from the moment the hinge starts to close until the main screen is back. */
+    @Volatile private var folding = false
+    private lateinit var guide: DragGuide
+    private var dragFromCurrent: String? = null
+
+    /** Zoom's pictures of each app's last screen, kept in memory only, never saved. */
+    private val snapshots = object : LinkedHashMap<String, Bitmap>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 8
+    }
+    private var snapFor: String? = null
+
     private var pendingOpen: String? = null
     private var pendingOpenAt = 0L
     private var dragFrom = IntArray(2)
@@ -83,6 +94,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     override fun onServiceConnected() {
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
+        guide = DragGuide(this, wm)
+        getSystemService(android.hardware.SensorManager::class.java)?.let { sm ->
+            sm.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE)?.let { sm.registerListener(this, it, android.hardware.SensorManager.SENSOR_DELAY_UI, main) }
+        }
         drawer = AppDrawer(this, wm, apps, onOpenApp = { pkg, v -> fromGrid(pkg, v) }, onHoldApp = { pkg, v -> openMenu(pkg, v) })
         // The bar now stays on the home screen too; only system surfaces such as the
         // notification shade push it aside.
@@ -99,6 +114,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
 
     override fun onDestroy() {
         running = false
+        runCatching { getSystemService(android.hardware.SensorManager::class.java)?.unregisterListener(this) }
         runCatching { Prefs.of(this).unregisterOnSharedPreferenceChangeListener(this) }
         runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
         removeBar()
@@ -122,7 +138,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
         override fun onDisplayRemoved(displayId: Int) = Unit
-        override fun onDisplayChanged(displayId: Int) = scheduleScan()
+        override fun onDisplayChanged(displayId: Int) {
+            if (::wm.isInitialized && !isMainScreen()) vanish()
+            scheduleScan()
+        }
     }
 
     override fun onSharedPreferenceChanged(p: SharedPreferences?, key: String?) {
@@ -175,9 +194,51 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_ALL
         ).map { it.activityInfo.packageName }.toSet()
 
+    /**
+     * Asks the display itself, not this service's copy of its size, which can lag the
+     * switch to the cover screen by seconds.
+     */
     private fun isMainScreen(): Boolean {
-        val b = wm.currentWindowMetrics.bounds
-        return minOf(b.width(), b.height()) / resources.displayMetrics.density >= 600
+        if (folding) return false
+        val d = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+        val m = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION") d?.getRealMetrics(m)
+        if (m.widthPixels == 0) {
+            val b = wm.currentWindowMetrics.bounds
+            return minOf(b.width(), b.height()) / resources.displayMetrics.density >= 600
+        }
+        return minOf(m.widthPixels, m.heightPixels) / m.density >= 600
+    }
+
+    /**
+     * The hinge. The bar leaves the instant the phone starts to close, before the cover
+     * screen even wakes, and comes back once it is open and the main screen is on.
+     */
+    override fun onSensorChanged(event: android.hardware.SensorEvent) {
+        val angle = event.values.firstOrNull() ?: return
+        val closing = angle < 150f
+        if (closing && !folding) {
+            folding = true
+            vanish()
+        } else if (!closing && folding) {
+            folding = false
+            scheduleScan()
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) = Unit
+
+    /** Gone this frame: no fade, no panels, no tab left behind on either screen. */
+    private fun vanish() {
+        main.removeCallbacks(hideNow)
+        barOn = false
+        hosts.forEach { it.animate().cancel(); it.tag = null; it.visibility = View.GONE; it.alpha = 1f }
+        closeMenu()
+        if (::drawer.isInitialized) drawer.close(animated = false)
+        guide.end()
+        removeStrips()
+        removeTab()
+        revealed = false
     }
 
     private fun shouldShow(): Boolean {
@@ -195,10 +256,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         if (!::wm.isInitialized) return
         recordRecents()
         reportOpenTime()
+        scheduleSnapshot()
 
+        if (!isMainScreen()) { vanish(); return }
         if (!shouldShow()) {
-            // The cover screen hides at once; anything else waits to be sure.
-            val delay = if (!isMainScreen()) 0L else 220L
+            // Anything other than folding waits a moment to be sure.
+            val delay = 220L
             main.removeCallbacks(hideNow); main.postDelayed(hideNow, delay)
             if (!isMainScreen()) closePanels()
             removeStrips()
@@ -656,6 +719,65 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
 
     private var loggedShotFailure = false
 
+    // ---- Zoom snapshots -------------------------------------------------------------
+
+    private val snap = Runnable { takeSnapshot() }
+
+    private fun scheduleSnapshot() {
+        if (Prefs.motion(this) != Motion.ZOOM) return
+        val alone = onScreen.filter { it !in noRecents }
+        val front = alone.singleOrNull()?.takeIf { it != packageName && onScreen.size == 1 } ?: return
+        if (front == snapFor) return
+        snapFor = front
+        main.removeCallbacks(snap)
+        main.postDelayed(snap, 900)
+    }
+
+    private fun takeSnapshot() {
+        val pkg = snapFor ?: return
+        if (onScreen.singleOrNull() != pkg || !isMainScreen()) { snapFor = null; return }
+        runCatching {
+            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(result: ScreenshotResult) {
+                    val hb = result.hardwareBuffer
+                    bg.post {
+                        runCatching {
+                            val full = Bitmap.wrapHardwareBuffer(hb, result.colorSpace) ?: return@runCatching
+                            val soft = full.copy(Bitmap.Config.ARGB_8888, false)
+                            full.recycle()
+                            val w = 540
+                            val small = Bitmap.createScaledBitmap(soft, w, (w * soft.height / soft.width.toFloat()).toInt(), true)
+                            soft.recycle()
+                            // A private screen (banking, passwords) comes back black: never use those
+                            if (!isBlank(small)) main.post { snapshots[pkg] = small } else small.recycle()
+                        }
+                        hb.close()
+                    }
+                }
+                override fun onFailure(errorCode: Int) = Unit
+            })
+        }
+        // Refresh while you stay in the app, so returning to it shows where you left it
+        main.postDelayed({ if (snapFor == pkg) { snapFor = null; scheduleSnapshot() } }, 15000)
+    }
+
+    private fun isBlank(b: Bitmap): Boolean {
+        var sum = 0L
+        var n = 0
+        var y = 0
+        while (y < b.height) {
+            var x = 0
+            while (x < b.width) {
+                val p = b.getPixel(x, y)
+                sum += ((p shr 16) and 255) + ((p shr 8) and 255) + (p and 255)
+                n++
+                x += 24
+            }
+            y += 24
+        }
+        return n == 0 || sum / (n * 3) < 6
+    }
+
     // ---- Auto-hide ----------------------------------------------------------------
 
     private val autoHideNow = Runnable {
@@ -810,7 +932,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
         // Launch first, on this frame; the motion is the app's own window moving
-        apps.open(pkg, source)
+        apps.open(pkg, source, snapshots[pkg])
         closePanels()
         if (Prefs.autoHide(this) && revealed) {
             main.removeCallbacks(autoHideNow)
@@ -895,16 +1017,82 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener,
         startSplit(l, r)
     }
 
+    /**
+     * Splits the screen between [left] and [right]. The way the left half is filled is
+     * learnt: each attempt is checked, and if One UI did not keep both apps on screen the
+     * next way is used next time. The last resort is two pop-ups side by side.
+     */
     private fun startSplit(left: android.content.ComponentName?, right: android.content.ComponentName) {
-        runCatching { startActivity(SplitActivity.intent(this, left, right)) }
-            .onFailure { EventLog.add(this, "Split: could not start (${it.javaClass.simpleName})") }
+        val method = if (left == null) 0 else Prefs.handover(this) % SplitActivity.HANDOVERS.size
+        if (left != null && method == 3) {
+            val s = screen(); val g = dp(4)
+            apps.openPopupAt(left.packageName, Rect(0, statusInset(), s.width() / 2 - g, s.height() - navInset()))
+            main.postDelayed({
+                apps.openPopupAt(right.packageName, Rect(s.width() / 2 + g, statusInset(), s.width(), s.height() - navInset()))
+            }, 250)
+        } else {
+            runCatching { startActivity(SplitActivity.intent(this, left, right, method)) }
+                .onFailure { EventLog.add(this, "Split: could not start (${it.javaClass.simpleName})") }
+        }
         main.postDelayed({
             bg.post {
                 scanWindows()
-                val names = onScreen.joinToString(" + ") { apps.entry(it)?.label ?: it }
-                EventLog.add(this, "Split result: on screen now $names")
+                val seen = onScreen
+                main.post {
+                    val names = seen.joinToString(" + ") { apps.entry(it)?.label ?: it }
+                    val ok = right.packageName in seen && (left == null || left.packageName in seen)
+                    if (ok) {
+                        EventLog.add(this, "Split worked (${SplitActivity.HANDOVERS[method]}): $names")
+                    } else if (left != null) {
+                        val next = (method + 1) % SplitActivity.HANDOVERS.size
+                        Prefs.setHandover(this, next)
+                        EventLog.add(this, "Split did not hold (${SplitActivity.HANDOVERS[method]}; on screen: $names). Next time: ${SplitActivity.HANDOVERS[next]}")
+                    }
+                }
             }
-        }, 2200)
+        }, 2600)
+    }
+
+    // ---- Dragging an app out of the bar --------------------------------------------
+
+    override fun appAt(host: BarHost, x: Float, y: Float): String? =
+        capsules.getOrNull(hosts.indexOf(host))?.appAt(x, y)?.first
+
+    override fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float) {
+        closePanels()
+        main.removeCallbacks(autoHideNow)
+        dragFromCurrent = onScreen.firstOrNull { it !in noRecents }
+        val lp = host.layoutParams as WindowManager.LayoutParams
+        guide.start(apps.icon(pkg), x, y, (lp.y + dp(10)).toFloat())
+        draggedApp = pkg
+    }
+
+    private var draggedApp: String? = null
+
+    override fun onAppDrag(x: Float, y: Float) { guide.move(x, y) }
+
+    /** Left or right: split with the app on screen. Middle: a pop-up where you let go. */
+    override fun onAppDragEnd(x: Float, y: Float, cancelled: Boolean) {
+        val pkg = draggedApp
+        draggedApp = null
+        val zone = if (cancelled) Drop.NONE else guide.zone
+        val point = guide.dropPoint()
+        guide.end()
+        if (pkg == null) return
+        val dragged = apps.entry(pkg)?.component ?: return
+        val other = splitPair()?.let { (l, r) -> if (zone == Drop.LEFT) r else l }?.takeIf { it != pkg }
+            ?: dragFromCurrent?.takeIf { it != pkg }
+        val otherComp = other?.let { apps.entry(it)?.component }
+        when (zone) {
+            Drop.LEFT -> if (otherComp != null) startSplit(dragged, otherComp) else apps.open(pkg)
+            Drop.RIGHT -> if (otherComp != null) startSplit(otherComp, dragged) else apps.open(pkg)
+            Drop.POPUP -> {
+                val (px, py) = point ?: (screen().exactCenterX() to screen().exactCenterY())
+                apps.openPopup(pkg, screen(), px.toInt(), py.toInt())
+            }
+            Drop.NONE -> Unit
+        }
+        if (Prefs.autoHide(this) && revealed) scheduleAutoHide()
     }
 
     override fun onPair(left: String, right: String, view: View) = openPair(left, right)

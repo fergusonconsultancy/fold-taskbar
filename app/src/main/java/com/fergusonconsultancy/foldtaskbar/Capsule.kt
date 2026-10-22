@@ -42,6 +42,7 @@ class Capsule(
     private val padX = context.dp(iconDp * 0.32f)
     private val padY = context.dp(8)
     private val indicators = HashMap<String, View>()
+    private val appViews = HashMap<View, String>()
     private var current: List<Slot> = emptyList()
 
     init {
@@ -72,6 +73,16 @@ class Capsule(
             rebuild(slots)
         }
         setActive(active)
+    }
+
+    /** The app icon under a point on screen, for dragging an app out of the bar. */
+    fun appAt(x: Float, y: Float): Pair<String, View>? {
+        val loc = IntArray(2)
+        for ((v, pkg) in appViews) {
+            v.getLocationOnScreen(loc)
+            if (x >= loc[0] && x <= loc[0] + v.width && y >= loc[1] && y <= loc[1] + v.height) return pkg to v
+        }
+        return null
     }
 
     /** Moves the open-app marks without touching anything else, so nothing redraws. */
@@ -110,6 +121,7 @@ class Capsule(
     private fun rebuild(slots: List<Slot>) {
         removeAllViews()
         indicators.clear()
+        appViews.clear()
         slots.forEachIndexed { i, slot ->
             val v = when (slot) {
                 Slot.AllApps -> glyph(Glyph.GRID) { actions.onAllApps(it) }.apply {
@@ -180,6 +192,7 @@ class Capsule(
             visibility = INVISIBLE
             layoutParams = FrameLayout.LayoutParams(context.dp(iconDp * 0.34f), context.dp(3), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         }.also { indicators[slot.pkg] = it })
+        appViews[frame] = slot.pkg
         pressable(frame)
         frame.setOnClickListener { it.tick(); actions.onApp(slot.pkg, it) }
         frame.setOnLongClickListener { it.thud(); actions.onAppHeld(slot.pkg, it); true }
