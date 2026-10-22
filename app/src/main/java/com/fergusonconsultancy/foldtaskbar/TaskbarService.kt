@@ -1254,7 +1254,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             .putExtra(Intent.EXTRA_USER, android.os.Process.myUserHandle())
             .putExtra(Intent.EXTRA_PACKAGE_NAME, pkg)
         val clip = android.content.ClipData(
-            android.content.ClipDescription(e.label, arrayOf(android.content.ClipDescription.MIMETYPE_APPLICATION_ACTIVITY)),
+            android.content.ClipDescription(e.label, arrayOf("application/vnd.android.activity")),
             android.content.ClipData.Item(data),
         )
         val icon = apps.icon(pkg)
