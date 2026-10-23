@@ -30,6 +30,13 @@ import android.view.animation.PathInterpolator
  * bar leads on a spring, the sides follow a beat behind and the near edge lets go last,
  * so the window stretches as it travels and settles into the screen. The corners relax
  * from icon-round to the screen's own radius, then the picture melts into the live app.
+ *
+ * Fanale (23 Oct 2026) is the same pour lit like the Giulietta's rear lamps at night. A ring
+ * of LED beads lights round the icon, sweeping away from the screen and back; the window's
+ * leading edge carries a beaded bar of light, lit from the icon's height outwards and fading
+ * towards its ends; the window casts a shadow ahead of itself and the app behind it dips, so
+ * the new app arrives in front of the old one. As it seats, the beads run out from the centre
+ * like an indicator switching off, and the picture melts into the live app.
  */
 @SuppressLint("ViewConstructor")
 class Pour(context: Context, private val wm: WindowManager) : View(context) {
@@ -41,6 +48,24 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private var body = Color.DKGRAY
     private var t = 0f
     private var running: Animator? = null
+    private var lamp = false
+    private val iconAt = RectF()
+
+    // Fanale: one unit radial glow, placed per bead with a shared matrix (no allocation per frame)
+    private val glowShader = android.graphics.RadialGradient(0f, 0f, 1f,
+        intArrayOf(Color.argb(255, 232, 24, 34), Color.argb(110, 200, 10, 24), Color.argb(0, 160, 0, 16)),
+        floatArrayOf(0f, 0.4f, 1f), android.graphics.Shader.TileMode.CLAMP)
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = glowShader }
+    private val core = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 134, 116) }
+    private val shadowShader = android.graphics.LinearGradient(0f, 0f, 1f, 0f,
+        Color.argb(120, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+    private val shadow = Paint().apply { shader = shadowShader }
+    private val dim = Paint().apply { color = Color.BLACK }
+    // The lamp's housing: a narrow band of dark bodywork just inside the leading edge
+    private val housingShader = android.graphics.LinearGradient(0f, 0f, 1f, 0f,
+        Color.argb(215, 12, 5, 7), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+    private val housing = Paint().apply { shader = housingShader }
+    private val mx = android.graphics.Matrix()
 
     private val r = RectF()
     private val path = Path()
@@ -52,6 +77,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private val lead = OvershootInterpolator(1.15f)
     private val follow = PathInterpolator(0.3f, 0f, 0f, 1f)
     private val trail = PathInterpolator(0.55f, 0f, 0.15f, 1f)
+    // Fanale: the lit edge crosses the screen on a steadier curve, so the light is seen travelling
+    private val lampLead = PathInterpolator(0.45f, 0f, 0.2f, 1f)
 
     private var attached = false
 
@@ -69,12 +96,14 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     /** Plays the pour from [source] (an icon on screen) over [screen]. */
-    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?) {
+    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, lamp: Boolean = false) {
+        this.lamp = lamp
         ensure()
         val loc = IntArray(2).also { source.getLocationOnScreen(it) }
         val mine = IntArray(2).also { getLocationOnScreen(it) }
         val ox = (loc[0] - mine[0]).toFloat(); val oy = (loc[1] - mine[1]).toFloat()
         from.set(ox, oy, ox + source.width, oy + source.height)
+        iconAt.set(from)
         // Start as a drop a touch smaller than the icon, so it visibly swells out of it
         from.inset(source.width * 0.08f, source.height * 0.08f)
         to.set(0f, 0f, (if (width > 0) width else screen.width()).toFloat(), (if (height > 0) height else screen.height()).toFloat())
@@ -88,7 +117,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         visibility = VISIBLE
         invalidate()
         running = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = TRAVEL_MS
+            duration = if (lamp) LAMP_TRAVEL_MS else TRAVEL_MS
             interpolator = null
             addUpdateListener { t = it.animatedFraction; invalidate() }
             addListener(object : AnimatorListenerAdapter() {
@@ -111,7 +140,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        val a = lead.getInterpolation(t)
+        val a = if (lamp) lampLead.getInterpolation(t) else lead.getInterpolation(t)
         val b = follow.getInterpolation(((t - 0.06f) / 0.94f).coerceIn(0f, 1f))
         val c = trail.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
         // The far edge leads, the sides follow, the near edge lets go last. A bar lying at
@@ -128,6 +157,15 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             r.top = mix(from.top, to.top, b); r.bottom = mix(from.bottom, to.bottom, b)
         }
         val radius = mix(from.width() * 0.32f, context.dp(30).toFloat(), b)
+        val leadSide = if (!across) (if (dy < 0) 'T' else 'B') else (if (dx < 0) 'L' else 'R')
+
+        // Fanale: the app behind dips and the window casts its shadow ahead of itself
+        if (lamp) {
+            val d = 0.3f * smooth(t / 0.3f) * (1f - smooth((t - 0.66f) / 0.34f))
+            if (d > 0.004f) { dim.alpha = (255 * d).toInt(); canvas.drawRect(to, dim) }
+            val sl = context.dp(56).toFloat() * (1f - smooth((t - 0.6f) / 0.4f))
+            if (sl > 1f) aheadShadow(canvas, leadSide, sl)
+        }
 
         path.reset()
         path.addRoundRect(r, radius, radius, Path.Direction.CW)
@@ -160,8 +198,103 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         canvas.restore()
         // A thin line of light along the rim, like the meniscus of a liquid, fading as it lands
         sheen.strokeWidth = context.dp(1.5f).toFloat()
-        sheen.color = Color.argb((90 * (1f - c)).toInt().coerceIn(0, 255), 255, 255, 255)
+        sheen.color = Color.argb(((if (lamp) 40 else 90) * (1f - c)).toInt().coerceIn(0, 255), 255, 255, 255)
         canvas.drawPath(path, sheen)
+        if (lamp) { drawEdge(canvas, leadSide); drawRing(canvas) }
+    }
+
+    private fun smooth(x: Float): Float { val c = x.coerceIn(0f, 1f); return c * c * (3f - 2f * c) }
+
+    /** A bead's brightness: dark until [at], then it lights with a brief flare and settles. */
+    private fun ignite(at: Float): Float {
+        if (t <= at) return 0f
+        val on = smooth((t - at) / 0.05f)
+        val flare = 0.7f * on * kotlin.math.exp(-((t - at - 0.05f).coerceAtLeast(0f)) / 0.07f)
+        return on * 0.72f + flare
+    }
+
+    private fun bead(canvas: Canvas, x: Float, y: Float, rCore: Float, level: Float) {
+        if (level <= 0.01f) return
+        val rg = rCore * 5f
+        mx.setScale(rg, rg); mx.postTranslate(x, y)
+        glowShader.setLocalMatrix(mx)
+        glow.alpha = (255 * (0.5f * level).coerceAtMost(1f)).toInt()
+        canvas.drawRect(x - rg, y - rg, x + rg, y + rg, glow)
+        core.alpha = (255 * (0.9f * level).coerceAtMost(1f)).toInt()
+        canvas.drawCircle(x, y, rCore, core)
+    }
+
+    private fun aheadShadow(canvas: Canvas, side: Char, len: Float) {
+        when (side) {
+            'L' -> { mx.setScale(-len, 1f); mx.postTranslate(r.left, 0f); shadowShader.setLocalMatrix(mx); canvas.drawRect(r.left - len, r.top, r.left, r.bottom, shadow) }
+            'R' -> { mx.setScale(len, 1f); mx.postTranslate(r.right, 0f); shadowShader.setLocalMatrix(mx); canvas.drawRect(r.right, r.top, r.right + len, r.bottom, shadow) }
+            'T' -> { mx.setScale(-len, 1f); mx.postRotate(90f); mx.postTranslate(0f, r.top); shadowShader.setLocalMatrix(mx); canvas.drawRect(r.left, r.top - len, r.right, r.top, shadow) }
+            else -> { mx.setScale(len, 1f); mx.postRotate(90f); mx.postTranslate(0f, r.bottom); shadowShader.setLocalMatrix(mx); canvas.drawRect(r.left, r.bottom, r.right, r.bottom + len, shadow) }
+        }
+    }
+
+    /**
+     * The beaded bar of light on the window's leading edge. Lit from the icon's height outwards,
+     * brightest where it started and falling off towards its ends; it runs out from the centre
+     * as the window seats.
+     */
+    private fun drawEdge(canvas: Canvas, side: Char) {
+        val vertical = side == 'L' || side == 'R'
+        val pos = when (side) { 'L' -> r.left; 'R' -> r.right; 'T' -> r.top; else -> r.bottom }
+        val a0 = if (vertical) r.top else r.left
+        val a1 = if (vertical) r.bottom else r.right
+        val len = a1 - a0
+        if (len < context.dp(8)) return
+        val pitch = context.dp(12).toFloat()
+        val n = (len / pitch).toInt().coerceAtLeast(1)
+        val anchor = (if (vertical) iconAt.centerY() else iconAt.centerX()).coerceIn(a0, a1)
+        val reach = maxOf(anchor - a0, a1 - anchor).coerceAtLeast(1f)
+        val inset = context.dp(3).toFloat() * (if (side == 'L' || side == 'T') 1 else -1)
+        val hw = context.dp(22).toFloat()
+        val ha = smooth(t / 0.08f) * (1f - smooth((t - 0.8f) / 0.15f))
+        if (ha > 0.01f) {
+            housing.alpha = (255 * ha).toInt()
+            mx.reset()
+            when (side) {
+                'L' -> { mx.setScale(hw, 1f); mx.postTranslate(r.left, 0f) }
+                'R' -> { mx.setScale(-hw, 1f); mx.postTranslate(r.right, 0f) }
+                'T' -> { mx.setScale(hw, 1f); mx.postRotate(90f); mx.postTranslate(0f, r.top) }
+                else -> { mx.setScale(-hw, 1f); mx.postRotate(90f); mx.postTranslate(0f, r.bottom) }
+            }
+            housingShader.setLocalMatrix(mx)
+            when (side) {
+                'L' -> canvas.drawRect(r.left, r.top, r.left + hw, r.bottom, housing)
+                'R' -> canvas.drawRect(r.right - hw, r.top, r.right, r.bottom, housing)
+                'T' -> canvas.drawRect(r.left, r.top, r.right, r.top + hw, housing)
+                else -> canvas.drawRect(r.left, r.bottom - hw, r.right, r.bottom, housing)
+            }
+        }
+        val rc = context.dp(2.4f).toFloat()
+        for (k in 0..n) {
+            val along = a0 + len * k / n
+            val d = kotlin.math.abs(along - anchor) / reach
+            val fall = 1f - 0.62f * Math.pow(d.toDouble(), 1.5).toFloat()
+            val off = 1f - smooth((t - (0.72f + 0.2f * d)) / 0.07f)
+            val level = ignite(0.06f + 0.3f * d) * fall * off
+            if (vertical) bead(canvas, pos + inset, along, rc * (0.7f + 0.3f * fall), level)
+            else bead(canvas, along, pos + inset, rc * (0.7f + 0.3f * fall), level)
+        }
+    }
+
+    /** The ring of beads round the icon: it sweeps round from the side facing the screen, then dims as the app leaves it. */
+    private fun drawRing(canvas: Canvas) {
+        val fade = 1f - smooth((t - 0.28f) / 0.3f)
+        if (fade <= 0f) return
+        val cx = iconAt.centerX(); val cy = iconAt.centerY()
+        val rad = iconAt.width() * 0.6f
+        val start = kotlin.math.atan2((to.centerY() - cy).toDouble(), (to.centerX() - cx).toDouble())
+        val m = 18
+        for (j in 0 until m) {
+            val ang = start + 2 * Math.PI * j / m
+            val x = cx + (rad * kotlin.math.cos(ang)).toFloat()
+            val y = cy + (rad * kotlin.math.sin(ang)).toFloat()
+            bead(canvas, x, y, context.dp(2.1f).toFloat(), ignite(0.16f * j / m) * fade)
+        }
     }
 
     private fun mix(x: Float, y: Float, f: Float) = x + (y - x) * f
@@ -201,6 +334,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
     companion object {
         const val TRAVEL_MS = 460L
+        const val LAMP_TRAVEL_MS = 620L
         const val MELT_MS = 240L
     }
 }
