@@ -3,151 +3,122 @@ package com.fergusonconsultancy.foldtaskbar
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import android.view.Gravity
-import android.widget.Button
+import android.view.View
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 
+/**
+ * Fold Taskbar's settings (redesigned 23 Oct 2026). Setup appears only while the taskbar is
+ * off; then how the bar looks, how apps arrive, how it behaves, and the guide and diagnostics
+ * folded away at the foot.
+ */
 class MainActivity : Activity() {
 
-    private val ink = Color.rgb(236, 232, 223)
-    private val muted = Color.rgb(160, 168, 160)
-    private val champagne = Color.rgb(211, 178, 124)
-
-    private lateinit var status: TextView
+    private lateinit var screen: Screen
+    private lateinit var setup: LinearLayout
+    private lateinit var iconsRow: Row
     private lateinit var logText: TextView
-    private val choiceButtons = mutableListOf<Pair<Button, () -> String>>()
+    private lateinit var versionText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val pad = dp(24)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad * 2, pad, pad)
-        }
+        window.statusBarColor = Kit.GROUND
+        window.navigationBarColor = Kit.GROUND
+        screen = Screen(this, "Fold Taskbar", "Galaxy Z Fold 8 Ultra")
 
-        root.addView(TextView(this).apply {
-            text = "Fold Taskbar"
-            textSize = 32f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(ink)
-        })
-
-        status = TextView(this).apply {
-            textSize = 15f
-            setTextColor(muted)
-            setLineSpacing(0f, 1.3f)
-            setPadding(0, pad / 2, 0, 0)
-        }
-        root.addView(status)
-
-        heading(root, "Switch it on")
-        root.addView(note(
-            "1. Tap Accessibility settings, find Fold Taskbar under Installed apps and turn it on.\n" +
-                "2. If Android says the setting is restricted, tap Allow restricted settings, then the menu " +
-                "in the top corner, then Allow restricted settings. Go back and repeat step 1."
-        ))
-        root.addView(button("Accessibility settings") {
+        // ---- Setup, only while the taskbar is off
+        setup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val steps = Card(this)
+        steps.row(Row(this, "1  Turn on Fold Taskbar", "Accessibility settings, Installed apps, Fold Taskbar", endValue("Open  ›", Kit.CHAMPAGNE)) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         })
-        root.addView(button("Allow restricted settings") {
+        steps.row(Row(this, "2  If it says restricted", "App info, the menu in the corner, Allow restricted settings. Then step 1 again.", endValue("Open  ›", Kit.CHAMPAGNE)) {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         })
+        setup.addView(eyebrow("Switch it on"))
+        setup.addView(steps)
+        screen.add(setup)
 
-        heading(root, "Look")
-        root.addView(choice({ "Shape: ${Prefs.shape(this).label}" }) {
-            val all = Shape.entries
-            Prefs.setShape(this, all[(all.indexOf(Prefs.shape(this)) + 1) % all.size])
-        })
-        root.addView(choice({ "Finish: ${Prefs.finish(this).label}" }) {
-            val all = Finish.entries
-            Prefs.setFinish(this, all[(all.indexOf(Prefs.finish(this)) + 1) % all.size])
-        })
-        root.addView(choice({ "Icon size: ${Prefs.iconDp(this)} dp" }) {
-            val all = Prefs.ICON_SIZES
-            Prefs.setIconDp(this, all[(all.indexOf(Prefs.iconDp(this)) + 1) % all.size])
-        })
-        root.addView(choice({ if (Prefs.autoHide(this)) "Auto-hide: on" else "Auto-hide: off (always showing)" }) {
-            Prefs.setAutoHide(this, !Prefs.autoHide(this))
-        })
-        root.addView(choice({ "App switching: ${Prefs.motion(this).label}" }) {
-            val all = Motion.entries
-            Prefs.setMotion(this, all[(all.indexOf(Prefs.motion(this)) + 1) % all.size])
-        })
-        root.addView(button("Put the taskbar back at the bottom") {
-            Prefs.resetSpots(this); refresh()
-        })
-        root.addView(choice({
-            val pack = Prefs.iconPack(this)
-            val packs = IconPack.installed(this)
-            when {
-                pack != null -> "Icons: " + (packs.firstOrNull { it.first == pack }?.second ?: pack)
-                packs.isEmpty() && IconPack.studioInstalled(this) -> "Icons: the phone's own (export your Icon Pack Studio pack first, see below)"
-                else -> "Icons: the phone's own"
-            }
-        }) {
+        // ---- Look
+        screen.section("Look")
+        screen.add(labelled("Shape", Segmented(this, Shape.entries.map { it.label }, Shape.entries.indexOf(Prefs.shape(this))) {
+            Prefs.setShape(this, Shape.entries[it])
+        }))
+        screen.add(FinishPicker(), px(18))
+        val sizes = Prefs.ICON_SIZES
+        screen.add(labelled("Icon size", Segmented(this, listOf("Small", "Medium", "Large").take(sizes.size), sizes.indexOf(Prefs.iconDp(this)).coerceAtLeast(0)) {
+            Prefs.setIconDp(this, sizes[it])
+        }), px(18))
+        val counts = Prefs.RECENT_COUNTS
+        screen.add(labelled("Recent apps", Segmented(this, counts.map { "$it" }, counts.indexOf(Prefs.recentCount(this)).coerceAtLeast(0)) {
+            Prefs.setRecentCount(this, counts[it])
+        }), px(18))
+        iconsRow = Row(this, "Icons", "", endValue("Change  ›", Kit.CHAMPAGNE)) {
             val options = listOf<String?>(null) + IconPack.installed(this).map { it.first }
             val now = options.indexOf(Prefs.iconPack(this)).coerceAtLeast(0)
             Prefs.setIconPack(this, options[(now + 1) % options.size])
-        })
-        root.addView(note(
-            "Icon Pack Studio keeps the packs you design inside itself; only Smart Launcher reads them there. " +
-                "For any other app to use one, install it as its own app: in Icon Pack Studio, open your pack and use its " +
-                "export or install option, which needs the free Icon Pack Studio Exporter. Once installed, Fold Taskbar picks it up on its own."
-        ))
-        root.addView(choice({ "Recent apps shown: ${Prefs.recentCount(this)}" }) {
-            val all = Prefs.RECENT_COUNTS
-            Prefs.setRecentCount(this, all[(all.indexOf(Prefs.recentCount(this)) + 1) % all.size])
-        })
-
-        heading(root, "Using it")
-        root.addView(note(
-            "Tap an app to switch to it. Press an app and slide it out of the bar to open it in split screen " +
-                "(towards the left, right, top or bottom half) or as a pop-up (the centre). In the grid, hold an app, then slide. " +
-                "Android decides whether a split is side by side or top and bottom; the half you choose decides which app comes first. " +
-                "Hold an app without sliding for its menu: pin, pair and more. " +
-                "Hold the grid button, the bar's handle, and slide to carry the bar anywhere. Let go near an edge and it docks, " +
-                "standing upright on the sides; near the crease it centres on it. Let go without sliding for the bar's menu: " +
-                "collapse to a tab, auto-hide and settings. Throwing the bar mostly off the screen also collapses it to a tab. " +
-                "Smoked glass turns dark over light screens and light over dark ones. " +
-                "The bar shows on the main screen everywhere and vanishes the instant you start to fold the phone."
-        ))
-
-        heading(root, "Event log")
-        root.addView(note("If split screen or pop-ups misbehave, screenshot this and send it to Claude."))
-        logText = TextView(this).apply {
-            textSize = 12f
-            typeface = Typeface.MONOSPACE
-            setTextColor(muted)
-            setLineSpacing(0f, 1.25f)
-            setTextIsSelectable(true)
-            setPadding(0, pad / 3, 0, 0)
+            refresh()
         }
-        root.addView(logText)
-        root.addView(button("Clear log") { EventLog.clear(this); refresh() })
-        root.addView(choice({ if (Prefs.systemDrag(this)) "Dragging apps: One UI's own split screen" else "Dragging apps: Fold Taskbar's guide (pop-ups only)" }) {
-            Prefs.setSystemDrag(this, !Prefs.systemDrag(this))
-        })
-        root.addView(button("Run the split-screen test") {
-            val svc = TaskbarService.instance
-            if (svc == null) {
-                EventLog.add(this, "Split test: switch the taskbar on first")
-                refresh()
-            } else {
-                svc.runSplitTest()
-            }
+        screen.add(Card(this).apply { row(iconsRow) }, px(18))
+
+        // ---- Motion
+        screen.section("App switching")
+        val motions = Motion.entries
+        screen.add(ChoiceList(this, motions.map { m ->
+            val name = m.label.substringBefore(":")
+            val detail = m.label.substringAfter(": ", "").replaceFirstChar { it.uppercase() }.ifBlank { "Android's own animation" }
+            Triple(name, detail, motionSwatch(m))
+        }, motions.indexOf(Prefs.motion(this))) { Prefs.setMotion(this, motions[it]); refresh() })
+
+        // ---- Behaviour
+        screen.section("Behaviour")
+        screen.add(Card(this).apply {
+            row(Row(this@MainActivity, "Auto-hide", "Swipe up where the bar sits to call it back",
+                Toggle(this@MainActivity, Prefs.autoHide(this@MainActivity)) { Prefs.setAutoHide(this@MainActivity, it) }))
+            row(Row(this@MainActivity, "One UI split screen", "Dragging an app hands it to One UI's own drop zones",
+                Toggle(this@MainActivity, Prefs.systemDrag(this@MainActivity)) { Prefs.setSystemDrag(this@MainActivity, it) }))
+            row(Row(this@MainActivity, "Put the bar back at the bottom", null, endValue("Reset", Kit.CHAMPAGNE)) {
+                Prefs.resetSpots(this@MainActivity); refresh()
+            })
         })
 
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(Color.rgb(14, 20, 17))
-            addView(root)
-        })
+        // ---- Guide and diagnostics
+        screen.section("Guide")
+        val guide = Fold(this, "Using the bar")
+        listOf(
+            "Tap an app to switch to it. Hold an app for its menu: pin, pair and more.",
+            "Press an app and slide it out of the bar for a split screen, or to the centre for a pop-up. In the grid, hold, then slide.",
+            "Hold the grid button and slide to carry the bar. With the hinge pair, the second half has its own grip: hold it to move that half alone, so each can sit over its own app in split screen.",
+            "Let go near an edge and it docks, upright on the sides. Near the crease it centres on it. Throw it mostly off the screen to collapse it to a tab.",
+            "Icon Pack Studio packs need exporting with the free Icon Pack Studio Exporter before any app other than Smart Launcher can read them.",
+        ).forEachIndexed { i, s ->
+            guide.body.addView(text(s, 14.5f, Kit.INK, 400), LinearLayout.LayoutParams(-1, -2).apply { if (i > 0) topMargin = px(12) })
+        }
+        screen.add(guide)
+
+        val diag = Fold(this, "Event log", "For Claude when something misbehaves")
+        versionText = text("", 12.5f, Kit.MUTED).apply { typeface = Typeface.MONOSPACE }
+        logText = text("", 12f, Kit.MUTED).apply { typeface = Typeface.MONOSPACE; setTextIsSelectable(true) }
+        diag.body.addView(versionText)
+        diag.body.addView(logText, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(12) })
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        buttons.addView(primary("Clear log", filled = false) { EventLog.clear(this); refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
+        buttons.addView(primary("Split test", filled = false) {
+            val svc = TaskbarService.instance
+            if (svc == null) { EventLog.add(this, "Split test: switch the taskbar on first"); refresh() } else svc.runSplitTest()
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = px(10) })
+        diag.body.addView(buttons, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(16) })
+        screen.add(diag, px(12))
+
+        setContentView(screen.root)
     }
 
     override fun onResume() {
@@ -157,19 +128,22 @@ class MainActivity : Activity() {
 
     private fun refresh() {
         val enabled = serviceEnabled()
-        status.text = buildString {
-            appendLine(
-                when {
-                    enabled && TaskbarService.running -> "Taskbar: on"
-                    enabled -> "Taskbar: switched on, waiting for Android to start it"
-                    else -> "Taskbar: off. Follow the two steps below."
-                }
-            )
-            appendLine("App switching: " + Prefs.motion(this@MainActivity).name.lowercase())
-            append("Version " + runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrDefault("?"))
+        when {
+            enabled && TaskbarService.running -> screen.status.set("On", Kit.GOOD)
+            enabled -> screen.status.set("Starting", Kit.WARN)
+            else -> screen.status.set("Off", Kit.MUTED)
         }
-        choiceButtons.forEach { (b, label) -> b.text = label() }
-        logText.text = EventLog.read(this)
+        setup.visibility = if (enabled) View.GONE else View.VISIBLE
+        val pack = Prefs.iconPack(this)
+        val packs = IconPack.installed(this)
+        iconsRow.setSub(when {
+            pack != null -> packs.firstOrNull { it.first == pack }?.second ?: pack
+            packs.isEmpty() && IconPack.studioInstalled(this) -> "The phone's own. Export your Icon Pack Studio pack first (see Guide)."
+            else -> "The phone's own"
+        })
+        versionText.text = "Version " + runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrDefault("?") +
+            "  ·  switching: " + Prefs.motion(this).name.lowercase()
+        logText.text = EventLog.read(this).ifBlank { "Nothing logged yet." }
     }
 
     private fun serviceEnabled(): Boolean {
@@ -178,36 +152,69 @@ class MainActivity : Activity() {
         return list.split(':').any { it.equals(mine, ignoreCase = true) }
     }
 
-    private fun heading(root: LinearLayout, text: String) {
-        root.addView(TextView(this).apply {
-            this.text = text
-            textSize = 13f
-            letterSpacing = 0.12f
-            isAllCaps = true
-            setTextColor(champagne)
-            setPadding(0, dp(28), 0, dp(6))
-        })
+    /** A control with its name above it. */
+    private fun labelled(name: String, control: View) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(text(name, 14f, Kit.MUTED, 450).apply { setPadding(px(4), 0, 0, px(8)) })
+        addView(control, LinearLayout.LayoutParams(-1, -2))
     }
 
-    private fun note(text: String) = TextView(this).apply {
-        this.text = text
-        textSize = 15f
-        setTextColor(ink)
-        setLineSpacing(0f, 1.3f)
+    /** The three finishes as tiles of the glass itself, the chosen one ringed in champagne. */
+    private fun FinishPicker(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(text("Finish", 14f, Kit.MUTED, 450).apply { setPadding(px(4), 0, 0, px(8)) })
+        val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+        val tiles = mutableListOf<View>()
+        fun paint() = tiles.forEachIndexed { i, t ->
+            t.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Kit.SURFACE); cornerRadius = px(18).toFloat()
+                setStroke(px(if (Finish.entries[i] == Prefs.finish(this@MainActivity)) 1.5f else 1f),
+                    if (Finish.entries[i] == Prefs.finish(this@MainActivity)) Kit.CHAMPAGNE else Kit.HAIRLINE)
+            }
+        }
+        Finish.entries.forEachIndexed { i, f ->
+            val tile = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(px(10), px(10), px(10), px(12))
+                addView(Swatch(this@MainActivity) { c, r ->
+                    c.drawColor(if (f == Finish.PAPER) Color.rgb(120, 130, 124) else Color.rgb(46, 58, 52))
+                    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = f.fill }
+                    val bar = RectF(r.left + r.width() * 0.12f, r.centerY() - r.height() * 0.16f, r.right - r.width() * 0.12f, r.centerY() + r.height() * 0.16f)
+                    c.drawRoundRect(bar, bar.height() / 2, bar.height() / 2, p)
+                    p.color = f.ink
+                    for (k in 0..3) c.drawCircle(bar.left + bar.width() * (0.2f + 0.2f * k), bar.centerY(), bar.height() * 0.2f, p)
+                    p.color = f.indicator
+                    c.drawRoundRect(bar.left + bar.width() * 0.33f, bar.bottom - bar.height() * 0.2f, bar.left + bar.width() * 0.47f, bar.bottom - bar.height() * 0.1f, 4f, 4f, p)
+                }, LinearLayout.LayoutParams(-1, px(52)))
+                addView(text(f.label.substringBefore(" ("), 13.5f, Kit.INK, 450).apply { setPadding(px(2), px(10), 0, 0) })
+                setOnClickListener { Prefs.setFinish(this@MainActivity, f); paint(); it.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK) }
+            }
+            tiles += tile
+            row.addView(tile, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i > 0) marginStart = px(10) })
+        }
+        paint()
+        addView(row)
     }
 
-    private fun choice(label: () -> String, next: () -> Unit): Button =
-        button(label()) { next(); refresh() }.also { choiceButtons += it to label }
-
-    private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        textSize = 16f
-        setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(10) }
-        gravity = Gravity.CENTER
+    /** Each way of switching as a still: the window arriving from the icon, lit as that motion lights it. */
+    private fun motionSwatch(m: Motion): (Canvas, RectF) -> Unit = { c, r ->
+        c.drawColor(Color.rgb(28, 34, 31))
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val icon = RectF(r.right - r.height() * 0.42f, r.centerY() - r.height() * 0.16f, r.right - r.height() * 0.1f, r.centerY() + r.height() * 0.16f)
+        val win = RectF(r.left + r.width() * 0.18f, r.top + r.height() * 0.14f, r.right - r.height() * 0.5f, r.bottom - r.height() * 0.14f)
+        p.color = Color.rgb(70, 86, 78)
+        c.drawRoundRect(icon, 6f, 6f, p)
+        if (m != Motion.SYSTEM) {
+            p.color = if (m == Motion.FANALE) Color.rgb(36, 30, 32) else Color.rgb(88, 104, 96)
+            c.drawRoundRect(win, 8f, 8f, p)
+        }
+        if (m == Motion.FANALE) {
+            p.color = Color.rgb(255, 128, 112)
+            for (k in 0..7) c.drawCircle(win.left + 2f, win.top + win.height() * (0.08f + 0.12f * k), 2.2f, p)
+            for (k in 0 until 10) {
+                val a = Math.PI * 2 * k / 10
+                c.drawCircle(icon.centerX() + icon.width() * 0.75f * Math.cos(a).toFloat(), icon.centerY() + icon.width() * 0.75f * Math.sin(a).toFloat(), 1.6f, p)
+            }
+        }
     }
 }
