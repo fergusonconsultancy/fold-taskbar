@@ -61,6 +61,10 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         Color.argb(120, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
     private val shadow = Paint().apply { shader = shadowShader }
     private val dim = Paint().apply { color = Color.BLACK }
+    // The lamp's housing: a narrow band of dark bodywork just inside the leading edge
+    private val housingShader = android.graphics.LinearGradient(0f, 0f, 1f, 0f,
+        Color.argb(215, 12, 5, 7), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+    private val housing = Paint().apply { shader = housingShader }
     private val mx = android.graphics.Matrix()
 
     private val r = RectF()
@@ -73,6 +77,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private val lead = OvershootInterpolator(1.15f)
     private val follow = PathInterpolator(0.3f, 0f, 0f, 1f)
     private val trail = PathInterpolator(0.55f, 0f, 0.15f, 1f)
+    // Fanale: the lit edge crosses the screen on a steadier curve, so the light is seen travelling
+    private val lampLead = PathInterpolator(0.45f, 0f, 0.2f, 1f)
 
     private var attached = false
 
@@ -134,7 +140,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        val a = lead.getInterpolation(t)
+        val a = if (lamp) lampLead.getInterpolation(t) else lead.getInterpolation(t)
         val b = follow.getInterpolation(((t - 0.06f) / 0.94f).coerceIn(0f, 1f))
         val c = trail.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
         // The far edge leads, the sides follow, the near edge lets go last. A bar lying at
@@ -209,7 +215,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
     private fun bead(canvas: Canvas, x: Float, y: Float, rCore: Float, level: Float) {
         if (level <= 0.01f) return
-        val rg = rCore * 4.2f
+        val rg = rCore * 5f
         mx.setScale(rg, rg); mx.postTranslate(x, y)
         glowShader.setLocalMatrix(mx)
         glow.alpha = (255 * (0.5f * level).coerceAtMost(1f)).toInt()
@@ -239,17 +245,36 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         val a1 = if (vertical) r.bottom else r.right
         val len = a1 - a0
         if (len < context.dp(8)) return
-        val pitch = context.dp(11).toFloat()
+        val pitch = context.dp(12).toFloat()
         val n = (len / pitch).toInt().coerceAtLeast(1)
         val anchor = (if (vertical) iconAt.centerY() else iconAt.centerX()).coerceIn(a0, a1)
         val reach = maxOf(anchor - a0, a1 - anchor).coerceAtLeast(1f)
-        val inset = context.dp(2).toFloat() * (if (side == 'L' || side == 'T') 1 else -1)
-        val rc = context.dp(1.7f).toFloat()
+        val inset = context.dp(3).toFloat() * (if (side == 'L' || side == 'T') 1 else -1)
+        val hw = context.dp(22).toFloat()
+        val ha = smooth(t / 0.08f) * (1f - smooth((t - 0.8f) / 0.15f))
+        if (ha > 0.01f) {
+            housing.alpha = (255 * ha).toInt()
+            mx.reset()
+            when (side) {
+                'L' -> { mx.setScale(hw, 1f); mx.postTranslate(r.left, 0f) }
+                'R' -> { mx.setScale(-hw, 1f); mx.postTranslate(r.right, 0f) }
+                'T' -> { mx.setScale(hw, 1f); mx.postRotate(90f); mx.postTranslate(0f, r.top) }
+                else -> { mx.setScale(-hw, 1f); mx.postRotate(90f); mx.postTranslate(0f, r.bottom) }
+            }
+            housingShader.setLocalMatrix(mx)
+            when (side) {
+                'L' -> canvas.drawRect(r.left, r.top, r.left + hw, r.bottom, housing)
+                'R' -> canvas.drawRect(r.right - hw, r.top, r.right, r.bottom, housing)
+                'T' -> canvas.drawRect(r.left, r.top, r.right, r.top + hw, housing)
+                else -> canvas.drawRect(r.left, r.bottom - hw, r.right, r.bottom, housing)
+            }
+        }
+        val rc = context.dp(2.4f).toFloat()
         for (k in 0..n) {
             val along = a0 + len * k / n
             val d = kotlin.math.abs(along - anchor) / reach
             val fall = 1f - 0.62f * Math.pow(d.toDouble(), 1.5).toFloat()
-            val off = 1f - smooth((t - (0.66f + 0.24f * d)) / 0.07f)
+            val off = 1f - smooth((t - (0.72f + 0.2f * d)) / 0.07f)
             val level = ignite(0.06f + 0.3f * d) * fall * off
             if (vertical) bead(canvas, pos + inset, along, rc * (0.7f + 0.3f * fall), level)
             else bead(canvas, along, pos + inset, rc * (0.7f + 0.3f * fall), level)
@@ -268,7 +293,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             val ang = start + 2 * Math.PI * j / m
             val x = cx + (rad * kotlin.math.cos(ang)).toFloat()
             val y = cy + (rad * kotlin.math.sin(ang)).toFloat()
-            bead(canvas, x, y, context.dp(1.5f).toFloat(), ignite(0.16f * j / m) * fade)
+            bead(canvas, x, y, context.dp(2.1f).toFloat(), ignite(0.16f * j / m) * fade)
         }
     }
 
@@ -309,7 +334,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
     companion object {
         const val TRAVEL_MS = 460L
-        const val LAMP_TRAVEL_MS = 560L
+        const val LAMP_TRAVEL_MS = 620L
         const val MELT_MS = 240L
     }
 }
