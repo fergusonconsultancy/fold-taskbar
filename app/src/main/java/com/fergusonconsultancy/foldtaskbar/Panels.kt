@@ -189,18 +189,18 @@ class AppDrawer(
                     val v = kotlin.math.abs(dy) / rv.resources.displayMetrics.density
                     val want = 1f - ((v - 6f) / 22f).coerceIn(0f, 1f)
                     labelDetail += (want - labelDetail) * 0.35f
-                    apply(rv)
+                    fade(rv)
                 }
                 override fun onScrollStateChanged(rv: RecyclerView, state: Int) {
                     if (state == RecyclerView.SCROLL_STATE_IDLE) {
                         android.animation.ValueAnimator.ofFloat(labelDetail, 1f).apply {
                             duration = 260
-                            addUpdateListener { labelDetail = it.animatedValue as Float; apply(rv) }
+                            addUpdateListener { labelDetail = it.animatedValue as Float; fade(rv) }
                             start()
                         }
                     }
                 }
-                private fun apply(rv: RecyclerView) {
+                private fun fade(rv: RecyclerView) {
                     for (i in 0 until rv.childCount) (rv.getChildViewHolder(rv.getChildAt(i)) as? Holder)?.label?.alpha = labelDetail
                 }
             })
