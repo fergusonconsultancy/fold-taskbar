@@ -129,7 +129,7 @@ class Apps(private val context: Context) {
     private fun motionOptions(v: android.view.View, motion: Motion, snapshot: android.graphics.Bitmap?): ActivityOptions? {
         if (motion in refused) return null
         return when (motion) {
-            Motion.FANALE, Motion.POUR -> ActivityOptions.makeCustomAnimation(context, R.anim.pour_enter, R.anim.pour_hold)
+            Motion.FANALE, Motion.MEMBRANA, Motion.POUR -> ActivityOptions.makeCustomAnimation(context, R.anim.pour_enter, R.anim.pour_hold)
             Motion.ZOOM -> if (snapshot != null) {
                 val tw = (v.width * 2.6f).toInt().coerceAtLeast(1)
                 val th = (tw * snapshot.height / snapshot.width.toFloat()).toInt().coerceAtLeast(1)

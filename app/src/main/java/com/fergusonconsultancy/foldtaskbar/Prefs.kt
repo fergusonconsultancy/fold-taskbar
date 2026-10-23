@@ -9,6 +9,7 @@ import android.content.SharedPreferences
  */
 enum class Motion(val label: String) {
     FANALE("Fanale: a tail-light ring lights round the icon and the app arrives on a beaded edge of light (drawn by the bar)"),
+    MEMBRANA("Membrana: the app arrives as a membrane, its edges bowing against their own speed and snapping taut (drawn by the bar)"),
     POUR("Pour: the app swells out of its icon like syrup (drawn by the bar)"),
     ZOOM("Zoom: the app's last screen grows out of its icon"),
     REVEAL("Reveal: the app opens out from its icon"),
@@ -18,12 +19,27 @@ enum class Motion(val label: String) {
 
 enum class Shape(val label: String) { PAIR("Hinge pair"), CAPSULE("Capsule") }
 
-enum class Finish(val label: String, val fill: Int, val ink: Int, val edge: Int, val indicator: Int) {
+enum class Finish(val label: String, val fill: Int, val ink: Int, val edge: Int, val indicator: Int, val adaptive: Boolean = false) {
     /** Smoked glass reads what is behind it and turns dark over light screens, light over dark. */
-    SMOKE("Smoked glass (adaptive)", 0xDB121614.toInt(), 0xFFE6E8E2.toInt(), 0x14FFFFFF, 0xFFD3B27C.toInt()),
+    SMOKE("Smoked glass (adaptive)", 0xDB121614.toInt(), 0xFFE6E8E2.toInt(), 0x14FFFFFF, 0xFFD3B27C.toInt(), adaptive = true),
+    /**
+     * Membrane (23 Oct 2026): a thin, living skin. Like smoked glass it flips light over dark
+     * and dark over light, but it is more translucent and takes far more of the colour beneath
+     * each stretch of the bar, so the bar seems grown from the app under it.
+     */
+    MEMBRANE("Membrane (adaptive)", 0xC8141816.toInt(), 0xFFEDEAE2.toInt(), 0x1AFFFFFF, 0xFFD3B27C.toInt(), adaptive = true),
+    /**
+     * Rosso lacquer (23 Oct 2026): Alfa red that keeps its contrast with whatever is behind it,
+     * deepening to oxblood over bright screens and lifting to a bright rosso over dark ones,
+     * ivory ink and a champagne light throughout.
+     */
+    ROSSO("Rosso lacquer (adaptive)", 0xF0861018.toInt(), 0xFFF6F1E6.toInt(), 0x40D9BB86, 0xFFD9BB86.toInt(), adaptive = true),
     VISCONTI("Visconti", 0xF01A3F31.toInt(), 0xFFEFE6D3.toInt(), 0x73D3B27C, 0xFFD3B27C.toInt()),
     PAPER("Paper", 0xF2F6F4EE.toInt(), 0xFF1D2620.toInt(), 0x14000000, 0xFF1F4A3A.toInt()),
 }
+
+/** How the bar rests (Bellezza Necessaria, principle 3). */
+enum class Presence(val label: String) { ALWAYS("Always"), TRIM("Trim") }
 
 /** Every setting and list the bar keeps, in one place. */
 object Prefs {
@@ -125,6 +141,21 @@ object Prefs {
 
     fun removePair(c: Context, left: String, right: String) =
         save(c, PAIRS, pairs(c).filter { it != (left to right) }.map { "${it.first}|${it.second}" })
+
+    /**
+     * Presence: Always shows the bar at all times. Trim (the Giulietta principle) lets it rest as
+     * a fine line of trim; touch it and the icons materialise around your finger, nearest first.
+     */
+    fun presence(c: Context) = runCatching { Presence.valueOf(of(c).getString("presence", null)!!) }.getOrDefault(Presence.ALWAYS)
+    fun setPresence(c: Context, v: Presence) = of(c).edit().putString("presence", v.name).apply()
+
+    /** Membrane: neighbours yield and lean when an app is pressed or lifted out of the bar. */
+    fun membrane(c: Context) = of(c).getBoolean("membrane", true)
+    fun setMembrane(c: Context, v: Boolean) = of(c).edit().putBoolean("membrane", v).apply()
+
+    /** Concentrato: the faster you drag or scroll, the more the surroundings fall away. */
+    fun concentrato(c: Context) = of(c).getBoolean("concentrato", true)
+    fun setConcentrato(c: Context, v: Boolean) = of(c).edit().putBoolean("concentrato", v).apply()
 
     fun autoHide(c: Context) = of(c).getBoolean(AUTO_HIDE, false)
     fun setAutoHide(c: Context, v: Boolean) = of(c).edit().putBoolean(AUTO_HIDE, v).apply()

@@ -32,7 +32,7 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
 
     fun start(icon: Drawable?, x: Float, y: Float, cancelArea: RectF) {
         end()
-        val v = GuideView(context, icon?.constantState?.newDrawable()?.mutate() ?: icon, cancelArea)
+        val v = GuideView(context, icon?.constantState?.newDrawable()?.mutate() ?: icon, cancelArea, Prefs.concentrato(context))
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -58,7 +58,12 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
     }
 
     @SuppressLint("ViewConstructor")
-    private class GuideView(context: Context, private val icon: Drawable?, private val cancelArea: RectF) : View(context) {
+    private class GuideView(context: Context, private val icon: Drawable?, private val cancelArea: RectF, private val concentrato: Boolean) : View(context) {
+        // Concentrato: how fast the finger is moving, smoothed; fast movement empties the guide
+        // down to the app and the place it will land
+        private var lastAt = 0L
+        private var speed = 0f
+        private var detail = 1f
         var zone = Drop.NONE
         var fx = 0f
         var fy = 0f
@@ -80,6 +85,12 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
         private var panelAlpha = 0f
 
         fun move(x: Float, y: Float) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (lastAt > 0L && now > lastAt) {
+                val dpPerMs = kotlin.math.hypot(x - fx, y - fy) / (now - lastAt) / context.resources.displayMetrics.density
+                speed += (dpPerMs - speed) * 0.35f
+            }
+            lastAt = now
             fx = x; fy = y
             val w = width.toFloat().takeIf { it > 0 } ?: context.resources.displayMetrics.widthPixels.toFloat()
             val h = height.toFloat().takeIf { it > 0 } ?: context.resources.displayMetrics.heightPixels.toFloat()
@@ -119,6 +130,10 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
             shown.bottom += (target.bottom - shown.bottom) * k
             val want = if (zone == Drop.NONE) 0f else 1f
             panelAlpha += (want - panelAlpha) * k
+            // Detail: full when the finger is slow or still, falling away above about 0.6 dp per ms
+            val wantDetail = if (!concentrato) 1f else 1f - (((speed - 0.6f) / 1.6f).coerceIn(0f, 1f)).let { it * it * (3 - 2 * it) }
+            detail += (wantDetail - detail) * 0.2f
+            speed *= 0.9f
 
             if (panelAlpha > 0.01f) {
                 // The rest of the screen steps back...
@@ -127,10 +142,10 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
                 // ...and the place the app will take comes forward, solid, with a champagne edge
                 val r = context.dp(24).toFloat()
                 panel.alpha = (0xD8 * panelAlpha).toInt()
-                edge.alpha = (255 * panelAlpha).toInt()
+                edge.alpha = (255 * panelAlpha * (0.25f + 0.75f * detail)).toInt()
                 canvas.drawRoundRect(shown, r, r, panel)
                 canvas.drawRoundRect(shown, r, r, edge)
-                crease.alpha = (230 * panelAlpha).toInt()
+                crease.alpha = (230 * panelAlpha * detail).toInt()
                 crease.strokeWidth = context.dp(1.5f).toFloat()
                 // The line the two halves will meet on lights up
                 if (zone == Drop.LEFT || zone == Drop.RIGHT) canvas.drawLine(width / 2f, 0f, width / 2f, height.toFloat(), crease)
@@ -152,13 +167,13 @@ class DragGuide(private val context: Context, private val wm: WindowManager) {
                 it.draw(canvas)
             }
             if (panelAlpha > 0.5f) {
-                label.alpha = (255 * (panelAlpha - 0.5f) * 2).toInt().coerceIn(0, 255)
+                label.alpha = (255 * (panelAlpha - 0.5f) * 2 * detail).toInt().coerceIn(0, 255)
                 label.textSize = context.dp(14).toFloat()
                 canvas.drawText(if (zone == Drop.POPUP) "Drop here for a pop-up" else "Drop here to open", ix, iy + context.dp(60), label)
             }
 
             val settling = abs(shown.left - target.left) + abs(shown.right - target.right) +
-                abs(shown.top - target.top) + abs(want - panelAlpha) * 100 + abs(ix - wantX) + abs(iy - wantY) > 1f
+                abs(shown.top - target.top) + abs(want - panelAlpha) * 100 + abs(ix - wantX) + abs(iy - wantY) + abs(wantDetail - detail) * 100 > 1f
             if (settling) postInvalidateOnAnimation()
         }
 

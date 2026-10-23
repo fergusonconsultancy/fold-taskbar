@@ -152,6 +152,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     override fun onSharedPreferenceChanged(p: SharedPreferences?, key: String?) {
+        if (key == "presence") main.post { restIfTrim() }
         if (key == Prefs.ICON_PACK) {
             // New icons everywhere: rebuild the bar and reload the grid
             layoutKey = ""
@@ -384,9 +385,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 if ((r - l != or_ - ol || b - t != ob - ot) && !(v as BarHost).dragging && i !in settling) place(i)
             }
             add(host, params(Gravity.TOP or Gravity.START, 0, 0))
+            host.setOnDragListener(dragEnd)
             capsules += capsule
             hosts += host
         }
+        main.postDelayed(restNow, 1200)
         attachDrawer()
     }
 
@@ -700,7 +703,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (!ticking && needsSampling()) { ticking = true; main.postDelayed(sampleTick, SAMPLE_EVERY_MS) }
     }
 
-    private fun adaptiveGlass() = Prefs.finish(this) == Finish.SMOKE
+    private fun adaptiveGlass() = Prefs.finish(this).adaptive
 
     private fun needsSampling(): Boolean {
         if (folding || !::wm.isInitialized || !isMainScreen()) return false
@@ -710,7 +713,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** The app to picture for Zoom: alone on screen for a moment, not pictured recently. */
     private fun snapshotWanted(): String? {
-        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.POUR, Motion.FANALE)) return null
+        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.POUR, Motion.FANALE, Motion.MEMBRANA)) return null
         val front = onScreen.singleOrNull()?.takeIf { it !in noRecents && it != packageName } ?: return null
         val now = SystemClock.uptimeMillis()
         if (now - frontSince < 900) return null
@@ -873,7 +876,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     /** Any touch on the bar keeps it up for a few more seconds. */
-    private fun onBarTouched() { if (Prefs.autoHide(this) && revealed) scheduleAutoHide() }
+    private fun onBarTouched() {
+        if (Prefs.autoHide(this) && revealed) scheduleAutoHide()
+        scheduleRest()
+    }
 
     /** Invisible strips over each hidden capsule's footprint. Swipe or tap one to bring the bar back. */
     @SuppressLint("ClickableViewAccessibility")
@@ -1013,8 +1019,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val pic = snapshots[pkg]
         apps.open(pkg, source, pic)
         val motion = Prefs.motion(this)
-        if ((motion == Motion.POUR || motion == Motion.FANALE) && source != null && source.isAttachedToWindow && isMainScreen()) {
-            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), lamp = motion == Motion.FANALE) }
+        if ((motion == Motion.POUR || motion == Motion.FANALE || motion == Motion.MEMBRANA) && source != null && source.isAttachedToWindow && isMainScreen()) {
+            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), lamp = motion == Motion.FANALE, membrane = motion == Motion.MEMBRANA) }
                 .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }
         }
         closePanels()
@@ -1312,6 +1318,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     override fun onAppDragStart(host: BarHost, pkg: String, x: Float, y: Float) {
         dismissHint()
+        focusOn(capsules.getOrNull(hosts.indexOf(host)), pkg)
         if (pkg.startsWith("pair:")) {
             // Dragging a pair: the first app opens now, the second rides the drag into a half
             val (left, right) = pkg.removePrefix("pair:").split('|').let { it[0] to it[1] }
@@ -1326,8 +1333,99 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     override fun onGridDragStart(pkg: String, x: Float, y: Float) {
         val src = drawer.dragSource
-        if (src != null && systemDrag(src, pkg)) { drawer.close(animated = false); return }
+        if (src != null && systemDrag(src, pkg)) { drawer.close(animated = false); focusOn(null, pkg); return }
+        focusOn(null, pkg)
         beginDrag(pkg, x, y)
+    }
+
+    // ---- Bellezza Necessaria: membrane, Concentrato, Trim --------------------------------
+
+    private var focusAnim: ValueAnimator? = null
+    private var focused: String? = null
+    private val unfocusLater = Runnable { unfocus() }
+
+    /**
+     * An app has been lifted out of the bar or grid. Membrane: its neighbours yield towards the
+     * gap. Concentrato: everything else on the bar steps back until the drag ends.
+     */
+    private fun focusOn(capsule: Capsule?, pkg: String) {
+        if (Prefs.membrane(this)) capsule?.yieldTo(pkg)
+        if (!Prefs.concentrato(this)) return
+        focused = pkg
+        animateFocus(1f)
+        // Android carries system drags; its end is heard by the bar's drag listener, with a backstop
+        main.removeCallbacks(unfocusLater)
+        main.postDelayed(unfocusLater, 9000)
+    }
+
+    private fun unfocus() {
+        main.removeCallbacks(unfocusLater)
+        if (focused == null) return
+        animateFocus(0f)
+    }
+
+    private fun animateFocus(to: Float) {
+        focusAnim?.cancel()
+        val key = focused
+        focusAnim = ValueAnimator.ofFloat(if (to > 0f) 0f else 1f, to).apply {
+            duration = if (to > 0f) 200 else 320
+            addUpdateListener { a -> capsules.forEach { it.purge(key, a.animatedValue as Float) } }
+            doOnEnd { if (to == 0f) focused = null }
+            start()
+        }
+    }
+
+    /** Hears Android's own drag ending (system drags), to bring the bar back into focus. */
+    private val dragEnd = View.OnDragListener { _, e ->
+        when (e.action) {
+            android.view.DragEvent.ACTION_DRAG_STARTED -> true
+            android.view.DragEvent.ACTION_DRAG_ENDED -> { unfocus(); true }
+            // Let go over the bar: nothing opens
+            android.view.DragEvent.ACTION_DROP -> false
+            else -> true
+        }
+    }
+
+    private val restNow = Runnable { restIfTrim() }
+
+    /** Presence: Trim. Rests every capsule as trim unless something of the bar is open. */
+    private fun restIfTrim() {
+        main.removeCallbacks(restNow)
+        if (Prefs.presence(this) != Presence.TRIM) { capsules.forEach { it.setResting(false) }; return }
+        if ((::drawer.isInitialized && drawer.isOpen) || menuWindow != null || focused != null || hosts.any { it.dragging }) {
+            main.postDelayed(restNow, 1500); return
+        }
+        capsules.forEach { it.setResting(true) }
+    }
+
+    private fun scheduleRest() {
+        main.removeCallbacks(restNow)
+        if (Prefs.presence(this) == Presence.TRIM) main.postDelayed(restNow, 3200)
+    }
+
+    override fun isResting(host: BarHost) = capsules.getOrNull(hosts.indexOf(host))?.resting == true
+
+    override fun onWake(host: BarHost, x: Float, y: Float) {
+        capsules.getOrNull(hosts.indexOf(host))?.setResting(false, x, y)
+        scheduleRest()
+    }
+
+    override fun onScrub(host: BarHost, x: Float, y: Float) {
+        capsules.getOrNull(hosts.indexOf(host))?.magnify(x, y)
+        scheduleRest()
+    }
+
+    override fun onScrubEnd(host: BarHost, x: Float, y: Float, slid: Boolean) {
+        val capsule = capsules.getOrNull(hosts.indexOf(host)) ?: return
+        capsule.unmagnify()
+        if (slid) {
+            // Slid along the trim and lifted on an app: open it, as a tap would
+            capsule.appAt(x, y)?.let { (key, v) ->
+                if (key.startsWith("pair:")) key.removePrefix("pair:").split('|').let { openPair(it[0], it[1], v) }
+                else launch(key, v)
+            }
+        }
+        scheduleRest()
     }
 
     /** True while Android, not the bar, is carrying a dragged app. */
@@ -1419,6 +1517,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** Left or right: split with the app on screen. Middle: a pop-up where you let go. */
     override fun onAppDragEnd(x: Float, y: Float, cancelled: Boolean) {
+        if (!systemDragging) unfocus()
         if (systemDragging) {
             // Android carries it from here; its drop zones decide what opens where
             systemDragging = false

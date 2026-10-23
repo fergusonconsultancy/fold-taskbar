@@ -37,6 +37,12 @@ import android.view.animation.PathInterpolator
  * towards its ends; the window casts a shadow ahead of itself and the app behind it dips, so
  * the new app arrives in front of the old one. As it seats, the beads run out from the centre
  * like an indicator switching off, and the picture melts into the live app.
+ *
+ * Membrana (23 Oct 2026, Bellezza Necessaria) is the same pour as a membrane. Each edge is
+ * held at its corners and bows against its own speed, the middle lagging behind like a skin
+ * drawn through air: the faster an edge travels, the deeper the curve. As the window lands and
+ * the edges slow, the curves relax and the membrane snaps taut, with a fine meniscus of light
+ * along it. Nothing on screen is decoration: every curve is a measure of speed.
  */
 @SuppressLint("ViewConstructor")
 class Pour(context: Context, private val wm: WindowManager) : View(context) {
@@ -49,6 +55,11 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private var t = 0f
     private var running: Animator? = null
     private var lamp = false
+    private var membrane = false
+    // Membrana: last frame's edges and time, for each edge's speed; and the bow each edge carries
+    private val last = RectF()
+    private var lastT = -1f
+    private val bow = FloatArray(4) // left, top, right, bottom
     private val iconAt = RectF()
 
     // Fanale: one unit radial glow, placed per bead with a shared matrix (no allocation per frame)
@@ -96,8 +107,11 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     /** Plays the pour from [source] (an icon on screen) over [screen]. */
-    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, lamp: Boolean = false) {
+    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, lamp: Boolean = false, membrane: Boolean = false) {
         this.lamp = lamp
+        this.membrane = membrane
+        lastT = -1f
+        bow.fill(0f)
         ensure()
         val loc = IntArray(2).also { source.getLocationOnScreen(it) }
         val mine = IntArray(2).also { getLocationOnScreen(it) }
@@ -168,7 +182,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         }
 
         path.reset()
-        path.addRoundRect(r, radius, radius, Path.Direction.CW)
+        if (membrane) membranePath(radius) else path.addRoundRect(r, radius, radius, Path.Direction.CW)
         canvas.save()
         canvas.clipPath(path)
         val pic = picture
@@ -198,9 +212,42 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         canvas.restore()
         // A thin line of light along the rim, like the meniscus of a liquid, fading as it lands
         sheen.strokeWidth = context.dp(1.5f).toFloat()
-        sheen.color = Color.argb(((if (lamp) 40 else 90) * (1f - c)).toInt().coerceIn(0, 255), 255, 255, 255)
+        // Membrana's meniscus is champagne, brightest while the membrane is still moving
+        sheen.color = if (membrane) Color.argb((150 * (1f - c * 0.8f)).toInt().coerceIn(0, 255), 236, 214, 170)
+            else Color.argb(((if (lamp) 40 else 90) * (1f - c)).toInt().coerceIn(0, 255), 255, 255, 255)
         canvas.drawPath(path, sheen)
         if (lamp) { drawEdge(canvas, leadSide); drawRing(canvas) }
+    }
+
+    /**
+     * The window as a membrane: corners rounded, each edge a curve bowed against its speed.
+     * Speeds are measured from the last frame; the bow follows them with a little lag (a
+     * membrane's inertia) and is capped so the window never pinches shut.
+     */
+    private fun membranePath(radius: Float) {
+        val dt = if (lastT < 0f) 0f else (t - lastT)
+        val sp = floatArrayOf(r.left - last.left, r.top - last.top, r.right - last.right, r.bottom - last.bottom)
+        val cap = minOf(r.width(), r.height()) * 0.12f
+        for (k in 0..3) {
+            // Pixels per unit of the animation's time; the middle of the edge lags the corners,
+            // so the bow points against the motion
+            val v = if (dt > 0f) sp[k] / dt else 0f
+            val want = (-v * 0.035f).coerceIn(-cap, cap)
+            bow[k] += (want - bow[k]) * 0.45f
+        }
+        last.set(r); lastT = t
+        val rad = minOf(radius, r.width() / 2f, r.height() / 2f)
+        val l = r.left; val tp = r.top; val rt = r.right; val b = r.bottom
+        path.moveTo(l + rad, tp)
+        path.quadTo((l + rt) / 2f, tp + 2f * bow[1] * 0.5f, rt - rad, tp)
+        path.quadTo(rt, tp, rt, tp + rad)
+        path.quadTo(rt + 2f * bow[2] * 0.5f, (tp + b) / 2f, rt, b - rad)
+        path.quadTo(rt, b, rt - rad, b)
+        path.quadTo((l + rt) / 2f, b + 2f * bow[3] * 0.5f, l + rad, b)
+        path.quadTo(l, b, l, b - rad)
+        path.quadTo(l + 2f * bow[0] * 0.5f, (tp + b) / 2f, l, tp + rad)
+        path.quadTo(l, tp, l + rad, tp)
+        path.close()
     }
 
     private fun smooth(x: Float): Float { val c = x.coerceIn(0f, 1f); return c * c * (3f - 2f * c) }
