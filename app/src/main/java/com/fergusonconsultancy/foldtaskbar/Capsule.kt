@@ -15,6 +15,8 @@ import android.widget.LinearLayout
 sealed interface Slot {
     object AllApps : Slot
     object Divider : Slot
+    /** The hinge pair's second handle, so each capsule can be lifted and moved on its own. */
+    object Grip : Slot
     data class App(val pkg: String) : Slot
     data class AppPair(val left: String, val right: String) : Slot { val key get() = "pair:$left|$right" }
 }
@@ -48,6 +50,7 @@ class Capsule(
     private val appViews = HashMap<View, String>()
     private val dividers = mutableListOf<View>()
     private var grid: GlyphView? = null
+    private var grip: GlyphView? = null
 
     // The capsule's colours, zone by zone along its length. Smoked glass sets each zone to
     // suit what is behind that part of the bar; fixed finishes keep every zone the same.
@@ -91,11 +94,10 @@ class Capsule(
         setActive(active)
     }
 
-    /** Whether a point on screen is on the grid button, the bar's handle. */
-    fun isHandle(x: Float, y: Float): Boolean {
-        val g = grid ?: return false
+    /** Whether a point on screen is on one of the capsule's handles: the grid button or the grip. */
+    fun isHandle(x: Float, y: Float): Boolean = listOfNotNull(grid, grip).any { g ->
         val loc = IntArray(2).also { g.getLocationOnScreen(it) }
-        return x >= loc[0] && x <= loc[0] + g.width && y >= loc[1] && y <= loc[1] + g.height
+        x >= loc[0] && x <= loc[0] + g.width && y >= loc[1] && y <= loc[1] + g.height
     }
 
     /**
@@ -151,6 +153,7 @@ class Capsule(
         glass.invalidateSelf()
         // Every mark on the bar takes the tone of the zone it sits in
         grid?.let { it.setInk(inks[zoneOf(it)]) }
+        grip?.let { it.setInk(inks[zoneOf(it)]) }
         dividers.forEach { it.setBackgroundColor((inks[zoneOf(it)] and 0x00FFFFFF) or 0x30000000) }
         indicators.values.forEach { v ->
             val frame = v.parent as? View ?: v
@@ -391,10 +394,15 @@ class Capsule(
         appViews.clear()
         dividers.clear()
         grid = null
+        grip = null
         slots.forEachIndexed { i, slot ->
             val v = when (slot) {
                 Slot.AllApps -> glyph(Glyph.GRID) { actions.onAllApps(it) }.also { grid = it as GlyphView }.apply {
                     setOnLongClickListener { it.thud(); actions.onAllAppsHeld(it); true }
+                }
+                // Holding the grip lifts this capsule alone (BarHost arms on any handle)
+                Slot.Grip -> glyph(Glyph.GRIP, narrow = true) { }.also { grip = it as GlyphView }.apply {
+                    contentDescription = "Move this half of the bar"
                 }
                 Slot.Divider -> View(context).apply {
                     setBackgroundColor(finish.ink and 0x00FFFFFF or 0x30000000)
@@ -503,7 +511,7 @@ class Capsule(
     }
 }
 
-enum class Glyph { GRID, CHEVRON }
+enum class Glyph { GRID, CHEVRON, GRIP }
 
 /** Draws the two non-app controls, so they scale with the icon size and take the finish's ink. */
 @SuppressLint("ViewConstructor")
@@ -549,6 +557,21 @@ class GlyphView(context: Context, private val kind: Glyph, ink: Int) : View(cont
                 for (row in 0..1) for (col in 0..1) {
                     r.set(start + col * (cell + g), top + row * (cell + g), start + col * (cell + g) + cell, top + row * (cell + g) + cell)
                     canvas.drawRoundRect(r, cell * 0.3f, cell * 0.3f, fill)
+                }
+            }
+            Glyph.GRIP -> {
+                // Two columns of three dots, the long way along the bar. They spread a little
+                // under the finger, as the grid's squares part: the handle answers the hold.
+                val upright = height >= width
+                val dot = s * 0.075f
+                val step = s * (0.17f + 0.05f * openness)
+                val across = s * (0.11f + 0.04f * openness)
+                for (a in -1..1) for (b in 0..1) {
+                    val along = a * step
+                    val side = if (b == 0) -across / 2 else across / 2
+                    val x = if (upright) cx + side else cx + along
+                    val y = if (upright) cy + along else cy + side
+                    canvas.drawCircle(x, y, dot, fill)
                 }
             }
             Glyph.CHEVRON -> {

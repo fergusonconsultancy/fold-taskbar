@@ -97,6 +97,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     override fun onServiceConnected() {
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
+        Prefs.offerFanale(this)
         guide = DragGuide(this, wm)
         getSystemService(android.hardware.SensorManager::class.java)?.let { sm ->
             sm.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE)?.let { sm.registerListener(this, it, android.hardware.SensorManager.SENSOR_DELAY_UI, main) }
@@ -709,7 +710,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** The app to picture for Zoom: alone on screen for a moment, not pictured recently. */
     private fun snapshotWanted(): String? {
-        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.POUR)) return null
+        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.POUR, Motion.FANALE)) return null
         val front = onScreen.singleOrNull()?.takeIf { it !in noRecents && it != packageName } ?: return null
         val now = SystemClock.uptimeMillis()
         if (now - frontSince < 900) return null
@@ -934,7 +935,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         return when (shape) {
             Shape.PAIR -> listOf(
                 (listOf(Slot.AllApps) + pinned.map { Slot.App(it) } + pairs).take(maxSlots),
-                tray.take(maxSlots).map { Slot.App(it) },
+                // The second capsule gets its own handle at its outer end, mirroring the grid
+                // button, so in split screen each half of the bar can sit over its own app
+                tray.take(maxSlots - 1).map { Slot.App(it) } + Slot.Grip,
             )
             Shape.CAPSULE -> {
                 val p = pinned.take((maxSlots - 1) / 2 + 1)
@@ -1009,8 +1012,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         // Launch first, on this frame; the motion is the app's own window moving
         val pic = snapshots[pkg]
         apps.open(pkg, source, pic)
-        if (Prefs.motion(this) == Motion.POUR && source != null && source.isAttachedToWindow && isMainScreen()) {
-            runCatching { pour.play(source, screen(), pic, apps.icon(pkg)) }
+        val motion = Prefs.motion(this)
+        if ((motion == Motion.POUR || motion == Motion.FANALE) && source != null && source.isAttachedToWindow && isMainScreen()) {
+            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), lamp = motion == Motion.FANALE) }
                 .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }
         }
         closePanels()

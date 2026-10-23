@@ -8,6 +8,7 @@ import android.content.SharedPreferences
  * reserved for the system (Depth asked for it, and One UI refused).
  */
 enum class Motion(val label: String) {
+    FANALE("Fanale: a tail-light ring lights round the icon and the app arrives on a beaded edge of light (drawn by the bar)"),
     POUR("Pour: the app swells out of its icon like syrup (drawn by the bar)"),
     ZOOM("Zoom: the app's last screen grows out of its icon"),
     REVEAL("Reveal: the app opens out from its icon"),
@@ -97,8 +98,17 @@ object Prefs {
     fun setIconPack(c: Context, v: String?) = of(c).edit().putString(ICON_PACK, v ?: "").apply()
     const val ICON_PACK = "icon_pack"
 
-    fun motion(c: Context) = runCatching { Motion.valueOf(of(c).getString(MOTION, null)!!) }.getOrDefault(Motion.POUR)
+    fun motion(c: Context) = runCatching { Motion.valueOf(of(c).getString(MOTION, null)!!) }.getOrDefault(Motion.FANALE)
     fun setMotion(c: Context, v: Motion) = of(c).edit().putString(MOTION, v.name).apply()
+
+    /** Once (23 Oct 2026): Pour was the default before Fanale, so a saved Pour moves to Fanale. */
+    fun offerFanale(c: Context) {
+        val p = of(c)
+        if (p.getBoolean("fanale_offered", false)) return
+        p.edit().putBoolean("fanale_offered", true).apply {
+            if (p.getString(MOTION, null) == Motion.POUR.name) putString(MOTION, Motion.FANALE.name)
+        }.apply()
+    }
 
     /** Which way of filling the left half of a split last worked (see SplitActivity). */
     fun handover(c: Context) = of(c).getInt(HANDOVER, 0)
