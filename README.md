@@ -18,6 +18,13 @@ A taskbar for the Galaxy Z Fold 8 Ultra's main screen that works with any launch
 - App pairs: hold an app and choose Pair with another app, or hold the grid button to save the two apps on screen as a pair. Pairs sit in the bar: drag a pair to either half and the first app opens while the second lands in One UI's split, in one movement. Tapping a pair opens the first app and points you to the drag.
 - Always showing by default, or auto-hide: swipe up where the bar sits to call it back. Hold the grid button to switch.
 
+## Bellezza Necessaria (23 Oct 2026)
+
+- **Presence:** Always, or Trim: the bar rests as a fine line of trim; the first touch wakes it, icons rising from your finger; slide along to swell them, lift on one to open it.
+- **Finishes:** Smoked glass, Membrane and Rosso lacquer adapt zone by zone to what is behind them; Visconti and Paper are fixed.
+- **Membrane:** lift an app out and its neighbours yield towards the gap. **Concentrato:** while dragging, everything else steps back; fast drags strip the drop guide to the app and its landing place; flinging the grid fades its labels.
+- **Membrana switching:** the app arrives as a membrane whose edges bow against their own speed and snap taut.
+
 ## Settings
 
 One screen in the apps' own palette and type (Italiana and Jost, bundled under the Open Font Licence): tiles for choices you compare, segmented controls for degrees, switches for on and off, and the guide and event log folded away at the foot.
