@@ -20,6 +20,31 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
+ * Bellezza Necessaria (23 Oct 2026): the doctrine behind both apps, as Mechack wrote it for
+ * Ferguson Consultancy Designs, shown in each app's settings and applied by this kit.
+ */
+object Doctrine {
+    const val TITLE = "Bellezza Necessaria"
+    const val SUBTITLE = "A doctrine of visceral motion: the synthesis of mechanical and organic life"
+    const val PREAMBLE = "Ferguson Consultancy Designs draws on Bauhaus, Gaudí and Alfa Romeo. We reject the cold grids of pure digital " +
+        "minimalism and the clutter of the over-ornamented screen alike. An interface is one living ecosystem, where structural " +
+        "utility, natural curves and tactile tension form a single canvas."
+    val PRINCIPLES = listOf(
+        Triple("1", "The monolithic membrane", "Gaudí meets Cuorerosso. No element exists in isolation. The screen is one continuous, " +
+            "flexible volume, the way Alfa Romeo's designers began the Cuorerosso as a sculpture before carving out a car. Move one " +
+            "element and its neighbours yield, stretch and pull: spatial magnetism."),
+        Triple("2", "Concentrato: the search for emptiness", "Bauhaus meets Alfa Romeo's interior detox. Absolute functional economy. " +
+            "During a gesture, the interface purges its periphery: the faster the movement, the emptier and more focused the space, " +
+            "until only the vital trajectory is left."),
+        Triple("3", "Progressive disclosure and proximity magnetism", "The Giulietta principle. As the Giulietta hides its rear door " +
+            "handles in the black sweep of the C-pillar to keep a clean two-door line, controls stay covert in the trim and " +
+            "materialise only where and when the hand reaches for them, then blend back."),
+    )
+    const val DECREE = "An interface must not behave like a rigid computer. Balancing functional restraint with organic, fluid physics, " +
+        "beauty stops being a decorative overlay. It becomes the inevitable, necessary by-product of motion."
+}
+
+/**
  * The settings screens' kit (23 Oct 2026), shared by Fold Motion and Fold Taskbar so the two
  * read as one family with their icons: smoked green-black, ivory ink, champagne for what is
  * chosen, Alfa red only where a lamp is meant. Italiana names things; Jost (a geometric sans in
@@ -76,10 +101,15 @@ fun Context.text(s: CharSequence, size: Float, color: Int = Kit.INK, weight: Int
 /** The small tracked capitals that head a section. */
 fun Context.eyebrow(s: String) = text(s.uppercase(), 11.5f, Kit.CHAMPAGNE, 500).apply {
     letterSpacing = 0.2f
+    tag = SECONDARY
     setPadding(px(4), px(30), 0, px(10))
 }
 
-/** The screen: a scrolling column on the ground colour, with the app's name and a status pill. */
+/** Marks a view as peripheral: Concentrato lets it fall away while the screen moves fast. */
+const val SECONDARY = "secondary"
+
+/**
+ * The screen: a scrolling column on the ground colour, with the app's name and a status pill. */
 class Screen(private val ctx: Context, name: String, over: String) {
     val column = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL
@@ -97,7 +127,56 @@ class Screen(private val ctx: Context, name: String, over: String) {
     }
     val status = Pill(ctx)
 
+    // ---- Doctrine on the screen itself ----------------------------------------------------
+    // Membrane: when the page is flung, the cards furthest from the middle of the view lag a
+    // little behind, as if the page were one stretched surface, and spring back as it slows.
+    // Concentrato: above a walking pace, the eyebrows and the lines under titles fall away,
+    // leaving only names to read at speed; they return as the page settles.
+    private var velocity = 0f
+    private var lastScrollAt = 0L
+    private var secondaries: List<View> = emptyList()
+    private var ticking = false
+    private val tick = object : android.view.Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            velocity *= 0.86f
+            stretch()
+            if (kotlin.math.abs(velocity) > 0.004f) android.view.Choreographer.getInstance().postFrameCallback(this)
+            else { velocity = 0f; stretch(); ticking = false }
+        }
+    }
+
+    private fun collect(v: View, out: MutableList<View>) {
+        if (v.tag == SECONDARY) out += v
+        if (v is ViewGroup) for (i in 0 until v.childCount) collect(v.getChildAt(i), out)
+    }
+
+    private fun onScrolled(dy: Int) {
+        val now = android.os.SystemClock.uptimeMillis()
+        val dt = (now - lastScrollAt).coerceIn(8L, 64L)
+        lastScrollAt = now
+        val dpPerMs = dy / ctx.resources.displayMetrics.density / dt
+        if (velocity == 0f) secondaries = mutableListOf<View>().also { collect(column, it) }
+        velocity += (dpPerMs - velocity) * 0.45f
+        if (!ticking) { ticking = true; android.view.Choreographer.getInstance().postFrameCallback(tick) }
+    }
+
+    private fun stretch() {
+        val mid = root.scrollY + root.height / 2f
+        val k = ctx.px(5).toFloat()
+        val cap = ctx.px(16).toFloat()
+        for (i in 0 until column.childCount) {
+            val c = column.getChildAt(i)
+            val d = kotlin.math.abs((c.top + c.height / 2f) - mid) / root.height.coerceAtLeast(1)
+            c.translationY = (velocity * k * d * 2f).coerceIn(-cap, cap)
+        }
+        val speed = kotlin.math.abs(velocity)
+        val u = ((speed - 0.9f) / 1.8f).coerceIn(0f, 1f)
+        val a = 1f - u * u * (3f - 2f * u)
+        secondaries.forEach { it.alpha = a }
+    }
+
     init {
+        root.setOnScrollChangeListener { _, _, y, _, oldY -> onScrolled(y - oldY) }
         column.addView(ctx.text(over.uppercase(), 11f, Kit.MUTED, 500).apply { letterSpacing = 0.22f; setPadding(ctx.px(4), 0, 0, ctx.px(6)) })
         val head = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(ctx.text(name, 44f, Kit.INK, displayFace = true), LinearLayout.LayoutParams(0, -2, 1f))
@@ -164,6 +243,7 @@ class Row(ctx: Context, title: String, sub: String? = null, end: View? = null, o
         setPadding(ctx.px(18), ctx.px(14), ctx.px(16), ctx.px(14))
         val words = LinearLayout(ctx).apply { orientation = VERTICAL }
         words.addView(titleView)
+        subView.tag = SECONDARY
         if (sub != null) words.addView(subView, LayoutParams(-2, -2).apply { topMargin = ctx.px(3) })
         addView(words, LayoutParams(0, -2, 1f))
         end?.let { addView(it, LayoutParams(-2, -2).apply { marginStart = ctx.px(12) }) }
@@ -265,26 +345,45 @@ class Segmented(ctx: Context, private val options: List<String>, selected: Int, 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
         thumbX = paddingLeft + segW() * index
+        thumbR = -1f
     }
+
+    // The thumb is liquid (principle 1): its leading edge races to the new option on a soft
+    // spring while its trailing edge lets go a beat later, so it stretches as it travels.
+    private var thumbR = -1f
 
     private fun choose(i: Int) {
         if (i == index) return
-        val from = thumbX
-        val to = paddingLeft + segW() * i
+        val fromL = thumbX; val fromR = if (thumbR < 0f) thumbX + segW() else thumbR
+        val toL = paddingLeft + segW() * i; val toR = toL + segW()
+        val forward = i > index
         labels[index].setTextColor(Kit.INK)
         index = i
         labels[i].setTextColor(Kit.GROUND)
-        ValueAnimator.ofFloat(from, to).apply {
-            duration = 300; interpolator = Kit.ease
-            addUpdateListener { thumbX = it.animatedValue as Float; invalidate() }
+        val lead = android.view.animation.OvershootInterpolator(1.3f)
+        val trail = PathInterpolator(0.5f, 0f, 0.15f, 1f)
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 420
+            addUpdateListener {
+                val t = it.animatedFraction
+                val fast = lead.getInterpolation((t / 0.7f).coerceAtMost(1f))
+                val slow = trail.getInterpolation(((t - 0.1f) / 0.9f).coerceIn(0f, 1f))
+                thumbX = fromL + (toL - fromL) * (if (forward) slow else fast)
+                thumbR = fromR + (toR - fromR) * (if (forward) fast else slow)
+                invalidate()
+            }
             start()
         }
         picked(i)
     }
 
+    /** Selects without telling the listener, for when the choice is changed elsewhere. */
+    fun select(i: Int) { if (i != index) { labels[index].setTextColor(Kit.INK); index = i; labels[i].setTextColor(Kit.GROUND); thumbX = paddingLeft + segW() * i; thumbR = -1f; invalidate() } }
+
     override fun onDraw(c: Canvas) {
         super.onDraw(c)
-        r.set(thumbX, paddingTop.toFloat(), thumbX + segW(), (height - paddingBottom).toFloat())
+        val right = if (thumbR < 0f) thumbX + segW() else thumbR
+        r.set(thumbX, paddingTop.toFloat(), right, (height - paddingBottom).toFloat())
         val rad = context.px(12).toFloat()
         c.drawRoundRect(r, rad, rad, thumb)
     }
@@ -306,7 +405,7 @@ class ChoiceList(ctx: Context, private val items: List<Triple<String, String, (C
                 addView(Swatch(ctx, paint), LayoutParams(ctx.px(84), ctx.px(56)))
                 val words = LinearLayout(ctx).apply { orientation = VERTICAL; setPadding(ctx.px(16), 0, 0, 0) }
                 words.addView(ctx.text(name, 17f, Kit.INK, 500))
-                words.addView(ctx.text(detail, 13f, Kit.MUTED), LayoutParams(-2, -2).apply { topMargin = ctx.px(3) })
+                words.addView(ctx.text(detail, 13f, Kit.MUTED).apply { tag = SECONDARY }, LayoutParams(-2, -2).apply { topMargin = ctx.px(3) })
                 addView(words, LayoutParams(0, -2, 1f))
                 setOnClickListener { choose(i); performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
             }
@@ -365,5 +464,38 @@ class Fold(ctx: Context, title: String, sub: String? = null) : LinearLayout(ctx)
         (parent as? ViewGroup)?.let { android.transition.TransitionManager.beginDelayedTransition(it.rootView as ViewGroup) }
         body.visibility = if (open) VISIBLE else GONE
         chevron.animate().rotation(if (open) 270f else 90f).setDuration(240).setInterpolator(Kit.ease).start()
+    }
+}
+
+/**
+ * The doctrine, folded away at the foot of the settings: the preamble, the three principles,
+ * the decree, and then [notes]: how this app answers each principle.
+ */
+fun Context.doctrineCard(notes: List<Pair<String, String>>): View = Fold(this, Doctrine.TITLE, Doctrine.SUBTITLE).apply {
+    val ctx = this@doctrineCard
+    body.addView(ctx.text(Doctrine.PREAMBLE, 14.5f, Kit.INK, 400))
+    Doctrine.PRINCIPLES.forEach { (n, name, text) ->
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(ctx.text(n, 26f, Kit.CHAMPAGNE, displayFace = true), LinearLayout.LayoutParams(ctx.px(30), -2))
+        val words = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        words.addView(ctx.text(name, 15.5f, Kit.INK, 500))
+        words.addView(ctx.text(text, 13.5f, Kit.MUTED, 400), LinearLayout.LayoutParams(-1, -2).apply { topMargin = ctx.px(4) })
+        row.addView(words, LinearLayout.LayoutParams(0, -2, 1f))
+        body.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ctx.px(18) })
+    }
+    body.addView(ctx.text(Doctrine.DECREE, 15f, Kit.CHAMPAGNE, 400).apply { setPadding(0, ctx.px(18), 0, 0) })
+    body.addView(ctx.eyebrow("In this app").apply { tag = null; setPadding(0, ctx.px(26), 0, ctx.px(4)) })
+    notes.forEach { (name, text) ->
+        body.addView(ctx.text(name, 15f, Kit.INK, 500), LinearLayout.LayoutParams(-1, -2).apply { topMargin = ctx.px(12) })
+        body.addView(ctx.text(text, 13.5f, Kit.MUTED, 400), LinearLayout.LayoutParams(-1, -2).apply { topMargin = ctx.px(3) })
+    }
+}
+
+/** A titled block of notes inside a fold, for the design notes on each choice. */
+fun Context.notesCard(title: String, sub: String, notes: List<Pair<String, String>>): View = Fold(this, title, sub).apply {
+    val ctx = this@notesCard
+    notes.forEachIndexed { i, (name, text) ->
+        body.addView(ctx.text(name, 15f, Kit.INK, 500), LinearLayout.LayoutParams(-1, -2).apply { if (i > 0) topMargin = ctx.px(16) })
+        body.addView(ctx.text(text, 13.5f, Kit.MUTED, 400), LinearLayout.LayoutParams(-1, -2).apply { topMargin = ctx.px(3) })
     }
 }

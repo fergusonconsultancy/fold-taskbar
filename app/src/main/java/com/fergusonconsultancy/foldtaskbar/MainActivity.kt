@@ -12,19 +12,21 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
- * Fold Taskbar's settings (redesigned 23 Oct 2026). Setup appears only while the taskbar is
- * off; then how the bar looks, how apps arrive, how it behaves, and the guide and diagnostics
- * folded away at the foot.
+ * Fold Taskbar's settings, rebuilt to Bellezza Necessaria (23 Oct 2026). Setup appears only
+ * while the taskbar is off. Then how the bar rests and looks, how apps arrive, how it behaves,
+ * and the doctrine, design notes, guide and log folded away at the foot.
  */
 class MainActivity : Activity() {
 
     private lateinit var screen: Screen
     private lateinit var setup: LinearLayout
     private lateinit var iconsRow: Row
+    private lateinit var presenceDetail: TextView
     private lateinit var logText: TextView
     private lateinit var versionText: TextView
 
@@ -47,12 +49,22 @@ class MainActivity : Activity() {
         setup.addView(steps)
         screen.add(setup)
 
+        // ---- How the bar rests
+        screen.section("Presence")
+        val presences = Presence.entries
+        presenceDetail = text("", 13.5f, Kit.MUTED).apply { tag = SECONDARY; setPadding(px(4), px(10), 0, 0) }
+        screen.add(Segmented(this, presences.map { it.label }, presences.indexOf(Prefs.presence(this))) {
+            Prefs.setPresence(this, presences[it]); paintPresence()
+        })
+        screen.add(presenceDetail)
+        paintPresence()
+
         // ---- Look
         screen.section("Look")
         screen.add(labelled("Shape", Segmented(this, Shape.entries.map { it.label }, Shape.entries.indexOf(Prefs.shape(this))) {
             Prefs.setShape(this, Shape.entries[it])
         }))
-        screen.add(FinishPicker(), px(18))
+        screen.add(finishPicker(), px(18))
         val sizes = Prefs.ICON_SIZES
         screen.add(labelled("Icon size", Segmented(this, listOf("Small", "Medium", "Large").take(sizes.size), sizes.indexOf(Prefs.iconDp(this)).coerceAtLeast(0)) {
             Prefs.setIconDp(this, sizes[it])
@@ -81,6 +93,10 @@ class MainActivity : Activity() {
         // ---- Behaviour
         screen.section("Behaviour")
         screen.add(Card(this).apply {
+            row(Row(this@MainActivity, "Membrane", "Lift an app out and its neighbours yield towards the gap",
+                Toggle(this@MainActivity, Prefs.membrane(this@MainActivity)) { Prefs.setMembrane(this@MainActivity, it) }))
+            row(Row(this@MainActivity, "Concentrato", "The faster you drag or fling, the more everything else falls away",
+                Toggle(this@MainActivity, Prefs.concentrato(this@MainActivity)) { Prefs.setConcentrato(this@MainActivity, it) }))
             row(Row(this@MainActivity, "Auto-hide", "Swipe up where the bar sits to call it back",
                 Toggle(this@MainActivity, Prefs.autoHide(this@MainActivity)) { Prefs.setAutoHide(this@MainActivity, it) }))
             row(Row(this@MainActivity, "One UI split screen", "Dragging an app hands it to One UI's own drop zones",
@@ -90,19 +106,13 @@ class MainActivity : Activity() {
             })
         })
 
-        // ---- Guide and diagnostics
+        // ---- Doctrine, notes, guide, log
+        screen.section("Doctrine")
+        screen.add(doctrineCard(DOCTRINE_NOTES))
+        screen.add(notesCard("Design notes", "Finishes, switching and the bar's behaviour", DESIGN_NOTES), px(12))
+
         screen.section("Guide")
-        val guide = Fold(this, "Using the bar")
-        listOf(
-            "Tap an app to switch to it. Hold an app for its menu: pin, pair and more.",
-            "Press an app and slide it out of the bar for a split screen, or to the centre for a pop-up. In the grid, hold, then slide.",
-            "Hold the grid button and slide to carry the bar. With the hinge pair, the second half has its own grip: hold it to move that half alone, so each can sit over its own app in split screen.",
-            "Let go near an edge and it docks, upright on the sides. Near the crease it centres on it. Throw it mostly off the screen to collapse it to a tab.",
-            "Icon Pack Studio packs need exporting with the free Icon Pack Studio Exporter before any app other than Smart Launcher can read them.",
-        ).forEachIndexed { i, s ->
-            guide.body.addView(text(s, 14.5f, Kit.INK, 400), LinearLayout.LayoutParams(-1, -2).apply { if (i > 0) topMargin = px(12) })
-        }
-        screen.add(guide)
+        screen.add(notesCard("Using the bar", "Taps, drags, handles and docking", GUIDE))
 
         val diag = Fold(this, "Event log", "For Claude when something misbehaves")
         versionText = text("", 12.5f, Kit.MUTED).apply { typeface = Typeface.MONOSPACE }
@@ -126,6 +136,13 @@ class MainActivity : Activity() {
         refresh()
     }
 
+    private fun paintPresence() {
+        presenceDetail.text = when (Prefs.presence(this)) {
+            Presence.ALWAYS -> "The bar is always there, in full."
+            Presence.TRIM -> "The bar rests as a fine line of trim. Touch it and the icons rise around your finger; slide along it and they swell as you pass; lift on one to open it."
+        }
+    }
+
     private fun refresh() {
         val enabled = serviceEnabled()
         when {
@@ -142,7 +159,7 @@ class MainActivity : Activity() {
             else -> "The phone's own"
         })
         versionText.text = "Version " + runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrDefault("?") +
-            "  ·  switching: " + Prefs.motion(this).name.lowercase()
+            "  ·  " + Prefs.motion(this).name.lowercase() + ", " + Prefs.finish(this).name.lowercase() + ", " + Prefs.presence(this).name.lowercase()
         logText.text = EventLog.read(this).ifBlank { "Nothing logged yet." }
     }
 
@@ -159,44 +176,69 @@ class MainActivity : Activity() {
         addView(control, LinearLayout.LayoutParams(-1, -2))
     }
 
-    /** The three finishes as tiles of the glass itself, the chosen one ringed in champagne. */
-    private fun FinishPicker(): View = LinearLayout(this).apply {
+    /**
+     * The finishes as tiles of the glass itself. Each tile is half bright and half dark behind,
+     * so the adaptive finishes show both of their faces at once; the chosen one is ringed.
+     */
+    private fun finishPicker(): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         addView(text("Finish", 14f, Kit.MUTED, 450).apply { setPadding(px(4), 0, 0, px(8)) })
         val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
         val tiles = mutableListOf<View>()
         fun paint() = tiles.forEachIndexed { i, t ->
+            val on = Finish.entries[i] == Prefs.finish(this@MainActivity)
             t.background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(Kit.SURFACE); cornerRadius = px(18).toFloat()
-                setStroke(px(if (Finish.entries[i] == Prefs.finish(this@MainActivity)) 1.5f else 1f),
-                    if (Finish.entries[i] == Prefs.finish(this@MainActivity)) Kit.CHAMPAGNE else Kit.HAIRLINE)
+                setStroke(px(if (on) 1.5f else 1f), if (on) Kit.CHAMPAGNE else Kit.HAIRLINE)
             }
         }
-        Finish.entries.forEachIndexed { i, f ->
+        Finish.entries.forEach { f ->
             val tile = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(px(10), px(10), px(10), px(12))
-                addView(Swatch(this@MainActivity) { c, r ->
-                    c.drawColor(if (f == Finish.PAPER) Color.rgb(120, 130, 124) else Color.rgb(46, 58, 52))
-                    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = f.fill }
-                    val bar = RectF(r.left + r.width() * 0.12f, r.centerY() - r.height() * 0.16f, r.right - r.width() * 0.12f, r.centerY() + r.height() * 0.16f)
-                    c.drawRoundRect(bar, bar.height() / 2, bar.height() / 2, p)
-                    p.color = f.ink
-                    for (k in 0..3) c.drawCircle(bar.left + bar.width() * (0.2f + 0.2f * k), bar.centerY(), bar.height() * 0.2f, p)
-                    p.color = f.indicator
-                    c.drawRoundRect(bar.left + bar.width() * 0.33f, bar.bottom - bar.height() * 0.2f, bar.left + bar.width() * 0.47f, bar.bottom - bar.height() * 0.1f, 4f, 4f, p)
-                }, LinearLayout.LayoutParams(-1, px(52)))
+                addView(Swatch(this@MainActivity) { c, r -> finishSwatch(c, r, f) }, LinearLayout.LayoutParams(px(112), px(56)))
                 addView(text(f.label.substringBefore(" ("), 13.5f, Kit.INK, 450).apply { setPadding(px(2), px(10), 0, 0) })
-                setOnClickListener { Prefs.setFinish(this@MainActivity, f); paint(); it.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK) }
+                addView(text(if (f.adaptive) "Adaptive" else "Fixed", 11.5f, if (f.adaptive) Kit.CHAMPAGNE else Kit.MUTED, 500).apply { letterSpacing = 0.08f; setPadding(px(2), px(2), 0, 0) })
+                setOnClickListener { Prefs.setFinish(this@MainActivity, f); paint(); refresh(); it.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK) }
             }
             tiles += tile
-            row.addView(tile, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i > 0) marginStart = px(10) })
+            row.addView(tile, LinearLayout.LayoutParams(-2, -2).apply { if (tiles.size > 1) marginStart = px(10) })
         }
         paint()
-        addView(row)
+        addView(HorizontalScrollView(this@MainActivity).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(row)
+        })
     }
 
-    /** Each way of switching as a still: the window arriving from the icon, lit as that motion lights it. */
+    /** How each finish looks over a bright screen (left) and a dark one (right). */
+    private fun finishSwatch(c: Canvas, r: RectF, f: Finish) {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val mid = r.centerX()
+        p.color = Color.rgb(226, 220, 206); c.drawRect(r.left, r.top, mid, r.bottom, p)
+        p.color = Color.rgb(22, 30, 40); c.drawRect(mid, r.top, r.right, r.bottom, p)
+        val bar = RectF(r.left + r.width() * 0.08f, r.centerY() - r.height() * 0.17f, r.right - r.width() * 0.08f, r.centerY() + r.height() * 0.17f)
+        // Each half of the bar takes the face it would show over that half of the screen
+        fun face(overLight: Boolean): Pair<Int, Int> = when (f) {
+            Finish.SMOKE -> if (overLight) 0xDB131815.toInt() to 0xFFEDEAE2.toInt() else 0xE8F0ECE4.toInt() to 0xFF1A201C.toInt()
+            Finish.MEMBRANE -> if (overLight) 0xB8665F52.toInt() to 0xFFF4F1EA.toInt() else 0xC4A3A6AA.toInt() to 0xFF141A16.toInt()
+            Finish.ROSSO -> if (overLight) 0xF26E0A12.toInt() to 0xFFF6F1E6.toInt() else 0xF0B8141E.toInt() to 0xFFF6F1E6.toInt()
+            else -> f.fill to f.ink
+        }
+        val rad = bar.height() / 2
+        for (half in 0..1) {
+            val (fill, ink) = face(overLight = half == 0)
+            c.save()
+            if (half == 0) c.clipRect(r.left, r.top, mid, r.bottom) else c.clipRect(mid, r.top, r.right, r.bottom)
+            p.color = fill; c.drawRoundRect(bar, rad, rad, p)
+            p.color = ink
+            for (k in 0..4) c.drawCircle(bar.left + bar.width() * (0.14f + 0.18f * k), bar.centerY(), bar.height() * 0.2f, p)
+            c.restore()
+        }
+    }
+
+    /** Each way of switching as a still: the window arriving from the icon, as that motion draws it. */
     private fun motionSwatch(m: Motion): (Canvas, RectF) -> Unit = { c, r ->
         c.drawColor(Color.rgb(28, 34, 31))
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -204,9 +246,23 @@ class MainActivity : Activity() {
         val win = RectF(r.left + r.width() * 0.18f, r.top + r.height() * 0.14f, r.right - r.height() * 0.5f, r.bottom - r.height() * 0.14f)
         p.color = Color.rgb(70, 86, 78)
         c.drawRoundRect(icon, 6f, 6f, p)
-        if (m != Motion.SYSTEM) {
-            p.color = if (m == Motion.FANALE) Color.rgb(36, 30, 32) else Color.rgb(88, 104, 96)
-            c.drawRoundRect(win, 8f, 8f, p)
+        when (m) {
+            Motion.SYSTEM -> Unit
+            Motion.MEMBRANA -> {
+                val path = android.graphics.Path()
+                val b = win.width() * 0.12f
+                path.moveTo(win.left, win.top)
+                path.quadTo(win.centerX(), win.top + b, win.right, win.top)
+                path.quadTo(win.right - b * 0.4f, win.centerY(), win.right, win.bottom)
+                path.quadTo(win.centerX(), win.bottom - b, win.left, win.bottom)
+                path.quadTo(win.left + b, win.centerY(), win.left, win.top)
+                p.color = Color.rgb(88, 104, 96); c.drawPath(path, p)
+                p.style = Paint.Style.STROKE; p.strokeWidth = 1.6f; p.color = Kit.CHAMPAGNE; c.drawPath(path, p); p.style = Paint.Style.FILL
+            }
+            else -> {
+                p.color = if (m == Motion.FANALE) Color.rgb(36, 30, 32) else Color.rgb(88, 104, 96)
+                c.drawRoundRect(win, 8f, 8f, p)
+            }
         }
         if (m == Motion.FANALE) {
             p.color = Color.rgb(255, 128, 112)
@@ -216,5 +272,27 @@ class MainActivity : Activity() {
                 c.drawCircle(icon.centerX() + icon.width() * 0.75f * Math.cos(a).toFloat(), icon.centerY() + icon.width() * 0.75f * Math.sin(a).toFloat(), 1.6f, p)
             }
         }
+    }
+
+    companion object {
+        val DOCTRINE_NOTES = listOf(
+            "Membrane" to "The bar is one surface. Lift an app out and its neighbours are drawn towards the gap, nearest most, while the glass swells where it left, then springs back. A tap still ripples outwards. Membrana switching treats the arriving app as a skin whose edges bow against their own speed.",
+            "Concentrato" to "While an app is carried out of the bar, everything else on the bar steps back. Drag fast and the drop guide sheds its outline, crease line and words, leaving the app and the place it will land. Fling the grid and its labels fall away, returning as it slows.",
+            "The Giulietta principle" to "Presence: Trim lets the bar rest as a fine line of trim. It wakes under your finger, the icons rising outwards from where you touched, and swelling as your finger slides past them. Lift on one to open it. The first touch only ever wakes it, so nothing opens by accident.",
+        )
+        val DESIGN_NOTES = listOf(
+            "Smoked glass" to "Reads the screen beyond each of eight stretches of the bar. Dark over light content, light over dark, with a trace of the colour underneath.",
+            "Membrane" to "Adaptive like smoked glass, but thin and translucent, taking far more of the colour beneath, so the bar seems grown from the app under it. Gaudí's rule: nothing exists in isolation.",
+            "Rosso lacquer" to "Alfa red that keeps its contrast: oxblood over bright screens, a brighter rosso over dark ones. Ivory ink and a champagne light throughout.",
+            "Fanale" to "A ring of LED beads sweeps round the icon you touched and the app crosses the screen on a beaded edge of light, the Giulietta's rear lamp at night.",
+            "Membrana" to "The app arrives as a membrane. Each edge is held at its corners and bows against its own speed, so every curve on screen is a measure of speed. As it lands the curves relax and it snaps taut, with a fine champagne meniscus.",
+            "Two handles" to "With the hinge pair, each half has its own handle: the grid button and a grip of six dots. Hold either and slide to move that half alone.",
+        )
+        val GUIDE = listOf(
+            "Switching" to "Tap an app to switch to it. Hold an app for its menu: pin, pair and more.",
+            "Split screen and pop-ups" to "Press an app and slide it out of the bar for a split screen, or to the centre for a pop-up. In the grid, hold, then slide.",
+            "Moving the bar" to "Hold the grid button or the grip and slide. Let go near an edge and it docks, upright on the sides. Near the crease it centres on it. Throw it mostly off the screen to collapse it to a tab.",
+            "Icon packs" to "Icon Pack Studio packs need exporting with the free Icon Pack Studio Exporter before any app other than Smart Launcher can read them.",
+        )
     }
 }

@@ -24,6 +24,13 @@ interface DragListener {
     fun onDragStart(host: BarHost)
     fun onDrag(host: BarHost, dx: Float, dy: Float)
     fun onDragEnd(host: BarHost)
+    /** Presence: Trim. Whether this capsule is resting as trim, so a touch wakes it rather than reaching an icon. */
+    fun isResting(host: BarHost): Boolean = false
+    fun onWake(host: BarHost, x: Float, y: Float) = Unit
+    /** The finger slides along the woken trim: icons swell towards it. */
+    fun onScrub(host: BarHost, x: Float, y: Float) = Unit
+    /** Lifted after a wake. [slid]: the finger travelled along the bar, so open the app under it. */
+    fun onScrubEnd(host: BarHost, x: Float, y: Float, slid: Boolean) = Unit
 }
 
 /**
@@ -46,6 +53,9 @@ class BarHost(context: Context, private val listener: DragListener) : FrameLayou
     var dragging = false
         private set
     private var appDrag: String? = null
+    // A touch that woke the trim: it belongs to the trim until it lifts (no icon opens by accident)
+    private var waking = false
+    private var slid = false
 
     private val arm = Runnable {
         armed = true
@@ -61,6 +71,27 @@ class BarHost(context: Context, private val listener: DragListener) : FrameLayou
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN && listener.isResting(this)) {
+            waking = true; slid = false
+            downX = ev.rawX; downY = ev.rawY
+            listener.onTouched()
+            listener.onWake(this, ev.rawX, ev.rawY)
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            return true
+        }
+        if (waking) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    if (hypot(ev.rawX - downX, ev.rawY - downY) > slop) slid = true
+                    listener.onScrub(this, ev.rawX, ev.rawY)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    waking = false
+                    listener.onScrubEnd(this, ev.rawX, ev.rawY, slid && ev.actionMasked == MotionEvent.ACTION_UP)
+                }
+            }
+            return true
+        }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 listener.onTouched()

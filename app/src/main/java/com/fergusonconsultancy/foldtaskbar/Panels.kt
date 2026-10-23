@@ -136,6 +136,8 @@ class AppDrawer(
     private var panelHost: FrameLayout? = null
     private var panel: LinearLayout? = null
     private var grid: RecyclerView? = null
+    /** Concentrato: how much of the grid's labels show, falling with fling speed. */
+    private var labelDetail = 1f
     private var adapter: Adapter? = null
     private var button: GlyphView? = null
     private var title: TextView? = null
@@ -180,6 +182,28 @@ class AppDrawer(
         adapter = Adapter(finish)
         grid = RecyclerView(context).apply {
             layoutManager = GridLayoutManager(context, columns)
+            // Concentrato: the faster the grid is flung, the more its labels fall away, leaving
+            // only the icons streaming past; they return as it slows
+            if (Prefs.concentrato(context)) addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                    val v = kotlin.math.abs(dy) / rv.resources.displayMetrics.density
+                    val want = 1f - ((v - 6f) / 22f).coerceIn(0f, 1f)
+                    labelDetail += (want - labelDetail) * 0.35f
+                    fade(rv)
+                }
+                override fun onScrollStateChanged(rv: RecyclerView, state: Int) {
+                    if (state == RecyclerView.SCROLL_STATE_IDLE) {
+                        android.animation.ValueAnimator.ofFloat(labelDetail, 1f).apply {
+                            duration = 260
+                            addUpdateListener { labelDetail = it.animatedValue as Float; fade(rv) }
+                            start()
+                        }
+                    }
+                }
+                private fun fade(rv: RecyclerView) {
+                    for (i in 0 until rv.childCount) (rv.getChildViewHolder(rv.getChildAt(i)) as? Holder)?.label?.alpha = labelDetail
+                }
+            })
             adapter = this@AppDrawer.adapter
             itemAnimator = null
             overScrollMode = View.OVER_SCROLL_NEVER
@@ -469,6 +493,7 @@ class AppDrawer(
             val app = items[position]
             h.icon.setImageDrawable(apps.icon(app.pkg))
             h.label.text = app.label
+            h.label.alpha = labelDetail
             h.itemView.contentDescription = app.label
             h.itemView.setOnClickListener {
                 it.tick()

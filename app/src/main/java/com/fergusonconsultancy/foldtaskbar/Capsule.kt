@@ -94,6 +94,112 @@ class Capsule(
         setActive(active)
     }
 
+    // ---- Bellezza Necessaria (23 Oct 2026) ------------------------------------------------
+
+    /** 0 awake, 1 resting as trim (Presence: Trim). */
+    private var rest = 0f
+    private var restAnim: android.animation.ValueAnimator? = null
+    val resting get() = rest > 0.5f
+
+    /** Every icon, handle and pair in the capsule, in order. */
+    private fun items(): List<View> = (0 until childCount).map { getChildAt(it) }.filter { it !in dividers }
+
+    /**
+     * Principle 3, the Giulietta principle: the bar rests as a fine line of trim, its icons
+     * dissolved into it. Touched at (x, y) on screen, it wakes: the glass widens and the icons
+     * materialise outwards from the finger, nearest first, the way the Giulietta's hidden rear
+     * handle only shows itself to the hand that reaches for it.
+     */
+    fun setResting(on: Boolean, x: Float = Float.NaN, y: Float = Float.NaN) {
+        val target = if (on) 1f else 0f
+        if (rest == target && restAnim?.isRunning != true) return
+        restAnim?.cancel()
+        val loc = IntArray(2).also { getLocationOnScreen(it) }
+        val along = if (vertical) (if (y.isNaN()) height / 2f else y - loc[1]) else (if (x.isNaN()) width / 2f else x - loc[0])
+        items().forEach { v ->
+            val c = if (vertical) v.top + v.height / 2f else v.left + v.width / 2f
+            val d = kotlin.math.abs(c - along) / context.dp(iconDp)
+            v.animate().cancel()
+            if (on) v.animate().alpha(0f).scaleX(0.55f).scaleY(0.55f).setStartDelay((d * 12).toLong()).setDuration(220).setInterpolator(Curves.CLOSE).start()
+            else v.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay((d * 26).toLong()).setDuration(320)
+                .setInterpolator(android.view.animation.OvershootInterpolator(1.6f)).start()
+        }
+        restAnim = android.animation.ValueAnimator.ofFloat(rest, target).apply {
+            duration = if (on) 360 else 280
+            interpolator = if (on) Curves.CLOSE else Curves.OPEN
+            addUpdateListener { rest = it.animatedValue as Float; glass.invalidateSelf(); invalidateOutline(); invalidate() }
+            start()
+        }
+    }
+
+    /**
+     * Proximity magnetism while the finger slides along the trim: icons swell towards the
+     * finger, the nearest most, and settle back as it moves on.
+     */
+    fun magnify(x: Float, y: Float) {
+        val loc = IntArray(2).also { getLocationOnScreen(it) }
+        val along = if (vertical) y - loc[1] else x - loc[0]
+        val reach = context.dp(iconDp) * 1.8f
+        items().forEach { v ->
+            val c = if (vertical) v.top + v.height / 2f else v.left + v.width / 2f
+            val k = (1f - kotlin.math.abs(c - along) / reach).coerceIn(0f, 1f)
+            val s = 1f + 0.32f * k * k * (3f - 2f * k)
+            v.scaleX = s; v.scaleY = s
+            val lift = -context.dp(8).toFloat() * k
+            if (vertical) v.translationX = lift else v.translationY = lift
+        }
+    }
+
+    fun unmagnify() = items().forEach { v ->
+        v.animate().scaleX(1f).scaleY(1f).translationX(0f).translationY(0f).setDuration(260)
+            .setInterpolator(android.view.animation.OvershootInterpolator(1.4f)).start()
+    }
+
+    /** The app under a point on screen, by whichever icon sits there (for lifting off the trim). */
+    fun keyAt(x: Float, y: Float): String? = appAt(x, y)?.first
+
+    /**
+     * Principle 1, the membrane: an app lifted out of the bar draws its neighbours towards the
+     * gap it leaves, nearest most, and the glass swells slightly where it left, before the
+     * surface springs back. One object's movement changes the stance of its peers.
+     */
+    fun yieldTo(key: String) {
+        val src = viewFor(key) ?: return
+        val i = items().indexOf(src)
+        if (i < 0) return
+        items().forEachIndexed { j, v ->
+            if (j == i) return@forEachIndexed
+            val d = kotlin.math.abs(j - i)
+            if (d > 4) return@forEachIndexed
+            val pull = context.dp(7f / d).toFloat() * (if (j > i) -1 else 1)
+            val prop = if (vertical) View.TRANSLATION_Y else View.TRANSLATION_X
+            android.animation.ObjectAnimator.ofFloat(v, prop, 0f, pull, 0f).apply {
+                startDelay = 24L * d; duration = 620
+                interpolator = android.view.animation.PathInterpolator(0.25f, 0f, 0.15f, 1f)
+                start()
+            }
+        }
+        val swell = if (vertical) View.SCALE_X else View.SCALE_Y
+        android.animation.ObjectAnimator.ofFloat(this, swell, 1f, 1.07f, 1f).apply {
+            duration = 520; interpolator = android.view.animation.PathInterpolator(0.3f, 0f, 0.1f, 1f); start()
+        }
+    }
+
+    /**
+     * Principle 2, Concentrato: while an app is carried out of the bar, everything else on it
+     * steps back, leaving only what is moving. [focus] 1 is fully purged, 0 restores.
+     */
+    fun purge(except: String?, focus: Float) {
+        val keep = except?.let { viewFor(it) }
+        val a = 1f - 0.82f * focus.coerceIn(0f, 1f)
+        items().forEach { v -> if (v !== keep) v.alpha = a }
+        dividers.forEach { it.alpha = a }
+        lightAlpha = a
+        invalidate()
+    }
+
+    private var lightAlpha = 1f
+
     /** Whether a point on screen is on one of the capsule's handles: the grid button or the grip. */
     fun isHandle(x: Float, y: Float): Boolean = listOfNotNull(grid, grip).any { g ->
         val loc = IntArray(2).also { g.getLocationOnScreen(it) }
@@ -119,13 +225,32 @@ class Capsule(
                 else -> lightZone[z] ?: false
             }
             lightZone[z] = light
-            val base = if (light) 0xF4F0E8 else 0x101412
-            val tint = if (light) 0.10f else 0.14f
-            fun ch(shift: Int) = ((((base shr shift) and 255) * (1 - tint)) + (((colour shr shift) and 255) * tint)).toInt()
-            f[z] = ((if (light) 0xE8 else 0xDB) shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
-            i[z] = if (light) 0xFF1A201C.toInt() else 0xFFEDEAE2.toInt()
-            e[z] = if (light) 0x1F000000 else 0x1AFFFFFF
-            g[z] = if (light) 0xFF8C6A33.toInt() else 0xFFD3B27C.toInt()
+            fun mixWith(base: Int, tint: Float, shift: Int) = ((((base shr shift) and 255) * (1 - tint)) + (((colour shr shift) and 255) * tint)).toInt()
+            fun tinted(base: Int, tint: Float, alpha: Int) = (alpha shl 24) or (mixWith(base, tint, 16) shl 16) or (mixWith(base, tint, 8) shl 8) or mixWith(base, tint, 0)
+            when (finish) {
+                Finish.MEMBRANE -> {
+                    // A thin skin: more translucent, and far more of the colour beneath it
+                    f[z] = if (light) tinted(0xF2EEE6, 0.42f, 0xC4) else tinted(0x0E1210, 0.45f, 0xB8)
+                    i[z] = if (light) 0xFF141A16.toInt() else 0xFFF4F1EA.toInt()
+                    e[z] = if (light) 0x26000000 else 0x24FFFFFF
+                    g[z] = if (light) 0xFF7A5A28.toInt() else 0xFFE2C48E.toInt()
+                }
+                Finish.ROSSO -> {
+                    // Alfa red that keeps its contrast: oxblood over bright screens, bright rosso over dark
+                    f[z] = if (light) tinted(0xB8141E, 0.06f, 0xF0) else tinted(0x6E0A12, 0.05f, 0xF2)
+                    i[z] = 0xFFF6F1E6.toInt()
+                    e[z] = if (light) 0x55F6D9A8 else 0x40D9BB86
+                    g[z] = 0xFFE9CF9E.toInt()
+                }
+                else -> {
+                    val base = if (light) 0xF4F0E8 else 0x101412
+                    val tint = if (light) 0.10f else 0.14f
+                    f[z] = tinted(base, tint, if (light) 0xE8 else 0xDB)
+                    i[z] = if (light) 0xFF1A201C.toInt() else 0xFFEDEAE2.toInt()
+                    e[z] = if (light) 0x1F000000 else 0x1AFFFFFF
+                    g[z] = if (light) 0xFF8C6A33.toInt() else 0xFFD3B27C.toInt()
+                }
+            }
         }
         toneTo(f, i, e, g)
     }
@@ -183,6 +308,12 @@ class Capsule(
             val b = bounds
             if (b.isEmpty) return
             r.set(b)
+            // Trim: at rest the capsule narrows to a fine line of trim along its length
+            if (rest > 0f) {
+                val thin = context.dp(5).toFloat()
+                if (vertical) { val cx = r.centerX(); val half = (r.width() / 2f) + (thin / 2f - r.width() / 2f) * rest; r.left = cx - half; r.right = cx + half; val inset = r.height() * 0.18f * rest; r.top += inset; r.bottom -= inset }
+                else { val cy = r.centerY(); val half = (r.height() / 2f) + (thin / 2f - r.height() / 2f) * rest; r.top = cy - half; r.bottom = cy + half; val inset = r.width() * 0.18f * rest; r.left += inset; r.right -= inset }
+            }
             val radius = minOf(r.width(), r.height()) / 2f
             val x1 = if (vertical) r.left else r.right
             val y1 = if (vertical) r.bottom else r.top
@@ -200,6 +331,7 @@ class Capsule(
         override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
         override fun getOutline(outline: android.graphics.Outline) {
             val b = bounds
+            if (rest > 0.02f) { outline.setEmpty(); return }
             outline.setRoundRect(b, minOf(b.width(), b.height()) / 2f)
         }
     }
@@ -348,10 +480,11 @@ class Capsule(
             val draw = if (vertical && l.travel) RectF(cx - thick / 2, r.top, cx + thick / 2, r.bottom)
             else RectF(r.left, cy - thick / 2, r.right, cy + thick / 2)
             val colour = glows[zoneAt(if (vertical) cy else cx)]
-            lightHalo.color = (colour and 0x00FFFFFF) or 0x40000000
+            lightHalo.color = (colour and 0x00FFFFFF) or ((0x40 * lightAlpha).toInt() shl 24)
             val halo = RectF(draw).apply { inset(-thick * 0.9f, -thick * 0.9f) }
             canvas.drawRoundRect(halo, halo.height().coerceAtMost(halo.width()) / 2, halo.height().coerceAtMost(halo.width()) / 2, lightHalo)
             lightCore.color = colour
+            lightCore.alpha = (255 * lightAlpha * (1f - rest)).toInt()
             val rad = minOf(draw.width(), draw.height()) / 2
             canvas.drawRoundRect(draw, rad, rad, lightCore)
         }
