@@ -23,6 +23,8 @@ A taskbar for the Galaxy Z Fold 8 Ultra's main screen that works with any launch
 - **Presence:** Always, or Trim: the bar rests as a fine line of trim; the first touch wakes it, icons rising from your finger; slide along to swell them, lift on one to open it.
 - **Finishes:** Smoked glass, Membrane and Rosso lacquer adapt zone by zone to what is behind them; Visconti and Paper are fixed.
 - **Membrane:** lift an app out and its neighbours yield towards the gap. **Concentrato:** while dragging, everything else steps back; fast drags strip the drop guide to the app and its landing place; flinging the grid fades its labels.
+- **Depth switches (24 Oct 2026):** Fuoco (a focus pull), Cascata (a trencadís mosaic arcing out of the icon) and Onda (a ripple welling up from the icon). The app you are leaving falls out of focus behind the arriving one, using Android's cross-window blur where One UI allows it (dimming only where it does not). Switching again within 700ms is cycling, and each switch gets quicker and shallower.
+- **Adaptive pill:** the active-app light reads the glass beneath it and takes the tone that stands out, ringed in the opposite tone.
 - **Membrana switching:** the app arrives as a membrane whose edges bow against their own speed and snap taut.
 
 ## Settings

@@ -381,6 +381,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         val stagger = if (quick) 0.18f else 0.34f
         val span = 1f - stagger - 0.06f
         val gap = context.dp(3).toFloat()
+        // Every tile down: the mosaic is one picture again, with no seams left to show
+        if (t >= stagger + span) { r.set(to); picture(canvas, r); return }
         for (row in 0 until rows) for (col in 0 until cols) {
             val tx = to.left + col * tw; val ty = to.top + row * th
             val cx = tx + tw / 2f; val cy = ty + th / 2f
@@ -396,8 +398,15 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             val px = (1 - k) * (1 - k) * ox + 2 * (1 - k) * k * mx2 + k * k * cx + (e - k) * (cx - ox) * 0.2f
             val py = (1 - k) * (1 - k) * oy + 2 * (1 - k) * k * my2 + k * k * cy + (e - k) * (cy - oy) * 0.2f
             val sc = mix(iconAt.width() / tw, 1f, e)
-            val seam = gap * (1f - smooth((u - 0.62f) / 0.38f))
-            val rad = context.dp(14).toFloat() * (1f - smooth((u - 0.7f) / 0.3f))
+            val seam = gap * (1f - smooth((u - 0.45f) / 0.35f))
+            val rad = context.dp(14).toFloat() * (1f - smooth((u - 0.5f) / 0.35f))
+            if (u >= 1f) {
+                // Landed: drawn edge to edge, a hair oversize, so neighbours meet without a seam
+                r.set(tx, ty, tx + tw, ty + th)
+                tile.set(tx - 0.75f, ty - 0.75f, tx + tw + 0.75f, ty + th + 0.75f)
+                picture(canvas, tile, r)
+                continue
+            }
             canvas.save()
             canvas.translate(px, py)
             canvas.rotate(10f * side * (1f - k))
