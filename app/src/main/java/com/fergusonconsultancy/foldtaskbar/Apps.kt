@@ -43,11 +43,20 @@ class Apps(private val context: Context) {
     fun entry(pkg: String): AppEntry? = entries[pkg] ?: launcher.getActivityList(pkg, user).firstOrNull()?.let { remember(it) }
 
     /** An app's icon: from your icon pack when one is chosen, so bar and grid match your home screen. */
-    fun icon(pkg: String): Drawable? = icons[pkg] ?: run {
-        val info = launcher.getActivityList(pkg, user).firstOrNull() ?: return null
-        val base = info.getBadgedIcon(0)
-        val themed = pack()?.let { p -> runCatching { p.iconFor(info.componentName, base) }.getOrNull() } ?: base
-        themed?.also { icons[pkg] = it }
+    /**
+     * The app's icon. Every call returns its own copy (sharing the same pixels), so one user
+     * resizing it can never change it for another. 24 Oct 2026: the split-screen drag image
+     * resized the one shared icon to 64dp, and the bar's icons drew at that size inside their
+     * slots, cut off on the right, until the bar was rebuilt.
+     */
+    fun icon(pkg: String): Drawable? {
+        val cached = icons[pkg] ?: run {
+            val info = launcher.getActivityList(pkg, user).firstOrNull() ?: return null
+            val base = info.getBadgedIcon(0)
+            val themed = pack()?.let { p -> runCatching { p.iconFor(info.componentName, base) }.getOrNull() } ?: base
+            themed?.also { icons[pkg] = it }
+        } ?: return null
+        return cached.constantState?.newDrawable(context.resources)?.mutate() ?: cached
     }
 
     @Volatile private var iconPack: IconPack? = null

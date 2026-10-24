@@ -502,3 +502,101 @@ fun Context.notesCard(title: String, sub: String, notes: List<Pair<String, Strin
         body.addView(ctx.text(text, 13.5f, Kit.MUTED, 400), LinearLayout.LayoutParams(-1, -2).apply { topMargin = ctx.px(3) })
     }
 }
+
+/**
+ * A slider: a slim smoked track filled in champagne up to an ivory knob, the value shown at the
+ * end of its label. Drag anywhere along it; a light tick marks the centre (the designed value),
+ * and the knob is drawn to it when released close by, so "as designed" is always one move away.
+ */
+@SuppressLint("ViewConstructor", "ClickableViewAccessibility")
+class Slider(
+    ctx: Context, private val label: String, private val min: Float, private val max: Float, value: Float,
+    private val centre: Float = 1f, private val format: (Float) -> String, private val changed: (Float) -> Unit,
+) : LinearLayout(ctx) {
+    var value = value.coerceIn(min, max)
+        private set
+    private val title = ctx.text(label, 14.5f, Kit.INK, 450)
+    private val readout = ctx.text("", 13.5f, Kit.CHAMPAGNE, 500)
+    private val track = object : View(ctx) {
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val r = RectF()
+        override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(MeasureSpec.getSize(w), context.px(36))
+        override fun onDraw(c: Canvas) {
+            val pad = context.px(11).toFloat()
+            val cy = height / 2f
+            val th = context.px(4).toFloat()
+            val x = pad + (width - 2 * pad) * fraction()
+            p.color = Kit.RAISED; r.set(pad, cy - th / 2, width - pad, cy + th / 2); c.drawRoundRect(r, th, th, p)
+            p.color = Kit.CHAMPAGNE; r.set(pad, cy - th / 2, x, cy + th / 2); c.drawRoundRect(r, th, th, p)
+            // The designed value
+            val cx = pad + (width - 2 * pad) * ((centre - min) / (max - min))
+            p.color = Kit.MUTED; c.drawCircle(cx, cy + context.px(10), context.px(1.5f).toFloat(), p)
+            p.color = Kit.INK; c.drawCircle(x, cy, context.px(10).toFloat(), p)
+            p.color = Kit.GROUND; c.drawCircle(x, cy, context.px(3.5f).toFloat(), p)
+        }
+    }
+
+    private fun fraction() = (value - min) / (max - min)
+
+    init {
+        orientation = VERTICAL
+        setPadding(ctx.px(18), ctx.px(14), ctx.px(18), ctx.px(8))
+        val head = LinearLayout(ctx).apply { orientation = HORIZONTAL }
+        head.addView(title, LayoutParams(0, -2, 1f))
+        head.addView(readout)
+        addView(head)
+        addView(track, LayoutParams(-1, -2).apply { topMargin = ctx.px(4) })
+        readout.text = format(this.value)
+        track.setOnTouchListener { v, e ->
+            val pad = context.px(11).toFloat()
+            val f = ((e.x - pad) / (v.width - 2 * pad)).coerceIn(0f, 1f)
+            var nv = min + (max - min) * f
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> v.parent.requestDisallowInterceptTouchEvent(true)
+                MotionEvent.ACTION_UP -> {
+                    // Close to the designed value: settle on it exactly
+                    if (kotlin.math.abs(nv - centre) < (max - min) * 0.04f) { nv = centre; performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
+                    changed(nv)
+                }
+            }
+            val stepped = (nv * 20).toInt() / 20f
+            if (stepped != value) { value = stepped.coerceIn(min, max); readout.text = format(value); v.invalidate() }
+            true
+        }
+    }
+}
+
+/** A row of chips that scrolls sideways: for choices with too many options, or names too long, for a segmented control. */
+@SuppressLint("ViewConstructor")
+class Chips(ctx: Context, private val options: List<String>, selected: Int, private val picked: (Int) -> Unit) : android.widget.HorizontalScrollView(ctx) {
+    private var index = selected
+    private val chips = mutableListOf<TextView>()
+
+    init {
+        isHorizontalScrollBarEnabled = false
+        overScrollMode = OVER_SCROLL_NEVER
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        options.forEachIndexed { i, o ->
+            val c = ctx.text(o, 14f, Kit.INK, 500).apply {
+                gravity = Gravity.CENTER
+                setPadding(ctx.px(16), ctx.px(10), ctx.px(16), ctx.px(10))
+                setOnClickListener { choose(i); performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
+            }
+            chips += c
+            row.addView(c, LinearLayout.LayoutParams(-2, -2).apply { if (i > 0) marginStart = ctx.px(8) })
+        }
+        addView(row)
+        paint()
+    }
+
+    private fun paint() = chips.forEachIndexed { i, c ->
+        val on = i == index
+        c.setTextColor(if (on) Kit.GROUND else Kit.INK)
+        c.background = rounded(if (on) Kit.CHAMPAGNE else Kit.RAISED, context.px(20).toFloat())
+    }
+
+    private fun choose(i: Int) { if (i == index) return; index = i; paint(); picked(i) }
+
+    /** Selects without telling the listener; -1 for none. */
+    fun select(i: Int) { index = i; paint() }
+}

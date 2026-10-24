@@ -1652,6 +1652,27 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         openPair(first, pkg)
     }
 
+    /**
+     * Opens [pkg] as a pop-up and then checks what One UI actually did. Asking for a window mode
+     * is a request, not a guarantee: an app that refuses resizing, or One UI declining the mode,
+     * opens it full screen instead. The check reads the app's real window after it settles and,
+     * if it covers the screen, says so plainly in the log and offers the reliable route.
+     */
+    private fun openPopupChecked(pkg: String) {
+        val screen = wm.currentWindowMetrics.bounds
+        if (!apps.openPopup(pkg, screen)) { hint("${apps.entry(pkg)?.label ?: "This app"} couldn't open as a pop-up", null); return }
+        main.postDelayed({
+            val win = runCatching { windows }.getOrDefault(emptyList()).firstOrNull { w ->
+                w.type == AccessibilityWindowInfo.TYPE_APPLICATION && runCatching { w.root?.packageName?.toString() }.getOrNull() == pkg
+            } ?: return@postDelayed
+            val r = Rect().also { win.getBoundsInScreen(it) }
+            val label = apps.entry(pkg)?.label ?: pkg
+            val full = r.width() >= screen.width() * 0.95f && r.height() >= screen.height() * 0.9f
+            EventLog.add(this, "Pop-up $label: landed ${r.width()}x${r.height()}${if (full) ", full screen (One UI declined)" else ""}")
+            if (full) hint("$label won't open as a pop-up. Drag it from the bar to the centre instead", null)
+        }, 900)
+    }
+
     private fun openMenu(pkg: String, anchor: View) {
         val label = apps.entry(pkg)?.label ?: pkg
         val pinned = Prefs.pinned(this)
@@ -1667,7 +1688,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                     if (inGrid) anchor else capsules.firstNotNullOfOrNull { it.viewFor(pkg) } ?: anchor,
                 )
             })
-            add("Open as pop-up (experimental)" to { closePanels(); apps.openPopup(pkg, wm.currentWindowMetrics.bounds) })
+            add("Open as pop-up" to { closePanels(); openPopupChecked(pkg) })
             add("Pair with another app" to {
                 closeMenu()
                 pairingFirst = pkg
