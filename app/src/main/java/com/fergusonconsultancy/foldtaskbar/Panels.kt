@@ -169,15 +169,16 @@ class AppDrawer(
         this.side = side
 
         scrim = View(context).apply {
-            setBackgroundColor(0x73000000)
+            // With the screen behind blurred, the shade only needs to settle it, not hide it
+            setBackgroundColor(if (blurSupported) 0x38000000 else 0x73000000)
             alpha = 0f
             visibility = View.INVISIBLE
             setOnClickListener { close() }
         }
         wm.addView(scrim, params(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, Gravity.TOP, 0))
 
-        val pad = context.dp(18)
-        val cell = context.dp(84)
+        val pad = context.dp(22)
+        val cell = context.dp(92)
         val columns = ((widthPx - pad * 2) / cell).coerceIn(4, 8)
         adapter = Adapter(finish)
         grid = RecyclerView(context).apply {
@@ -216,12 +217,14 @@ class AppDrawer(
             orientation = LinearLayout.VERTICAL
             // The glass is drawn by the liquid around it
             setPadding(pad, pad, pad, pad)
+            // The doctrine's eyebrow: small champagne capitals, widely spaced
             addView(TextView(context).apply {
-                text = "All apps"
-                textSize = 15f
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(finish.ink)
-                setPadding(context.dp(6), 0, 0, context.dp(12))
+                text = "ALL APPS"
+                textSize = 11.5f
+                typeface = Kit.sans(context, 500)
+                letterSpacing = 0.18f
+                setTextColor(Kit.CHAMPAGNE)
+                setPadding(context.dp(8), context.dp(4), 0, context.dp(16))
             }.also { title = it })
             addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
@@ -238,7 +241,9 @@ class AppDrawer(
             addView(liquid, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             visibility = View.INVISIBLE
         }
-        wm.addView(panelHost, params(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, Gravity.TOP, 0))
+        wm.addView(panelHost, params(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, Gravity.TOP, 0).apply {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) { flags = flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND; blurBehindRadius = 0 }
+        })
         adapter?.submit(apps.all())
         return true
     }
@@ -255,7 +260,7 @@ class AppDrawer(
 
     /** [from] is the grid button: the grid pours up out of it and drains back into it. */
     fun open(from: GlyphView?, heading: String = "All apps") {
-        title?.text = heading
+        title?.text = heading.uppercase()
         val host = panelHost ?: return
         val l = liquid ?: return
         val s = scrim ?: return
@@ -278,7 +283,7 @@ class AppDrawer(
         running = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = POUR_MS
             interpolator = null
-            addUpdateListener { l.progress = it.animatedFraction; l.invalidate() }
+            addUpdateListener { l.progress = it.animatedFraction; l.invalidate(); blurTo(l.progress) }
             start()
         }
         bubble(l.origin)
@@ -306,7 +311,7 @@ class AppDrawer(
         running = ValueAnimator.ofFloat(from, 0f).apply {
             duration = DRAIN_MS
             interpolator = Curves.CLOSE
-            addUpdateListener { l.progress = it.animatedValue as Float; l.invalidate() }
+            addUpdateListener { l.progress = it.animatedValue as Float; l.invalidate(); blurTo(l.progress) }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) { if (!isOpen) hideNow(host) }
             })
@@ -314,7 +319,47 @@ class AppDrawer(
         }
     }
 
+    private val blurSupported get() = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+        runCatching { wm.isCrossWindowBlurEnabled }.getOrDefault(false)
+
+    /**
+     * Depth (Concentrato): the screen behind falls out of focus as the grid opens, so nothing
+     * behind the glass is ever legible through it. Before, text showed through the panel in
+     * ghosted lines; now the glass is clean and what is behind is only colour and light.
+     */
+    private fun blurTo(f: Float) {
+        val host = panelHost ?: return
+        if (!blurSupported || !host.isAttachedToWindow) return
+        val lp = host.layoutParams as? WindowManager.LayoutParams ?: return
+        val want = (context.dp(36) * f.coerceIn(0f, 1f)).toInt()
+        if (kotlin.math.abs(lp.blurBehindRadius - want) < 2 && !(want == 0 && lp.blurBehindRadius != 0)) return
+        lp.blurBehindRadius = want
+        runCatching { wm.updateViewLayout(host, lp) }
+    }
+
+    /**
+     * Adaptive glass: the panel takes the colour of what it opens over. Over a light screen it
+     * is deep smoke with a trace of that colour; over a dark one it lifts a step, so it always
+     * stands clear of what is behind it. [colour] and [lum] are read from the screen under it.
+     */
+    fun setBackdrop(colour: Int, lum: Float) {
+        val l = liquid ?: return
+        val base = if (lum > 0.5f) 0xFF0E1311.toInt() else 0xFF232B27.toInt()
+        val target = blend(base, colour or 0xFF000000.toInt(), if (lum > 0.5f) 0.12f else 0.2f)
+        val alpha = if (blurSupported) 0xE0 else 0xF5
+        val from = l.tone
+        android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 180
+            addUpdateListener {
+                val c = blend(from, target, it.animatedFraction)
+                l.tone = (c and 0x00FFFFFF) or (alpha shl 24); l.invalidate()
+            }
+            start()
+        }
+    }
+
     private fun hideNow(host: View) {
+        blurTo(0f)
         host.visibility = View.INVISIBLE
         host.alpha = 1f
         drainTo = null
@@ -394,11 +439,13 @@ class AppDrawer(
         var progress = 1f
         val inset = context.dp(10).toFloat()
         private val path = android.graphics.Path()
-        private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = finish.fill }
+        // Adaptive finishes take their tone from the screen beneath (setBackdrop); fixed finishes keep theirs
+        var tone = if (finish.adaptive) (if (blurSupported) 0xE0161C19.toInt() else 0xF5161C19.toInt()) else finish.fill
+        private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        // One hairline of champagne: the edge of the glass, never a border
         private val edge = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.STROKE; color = finish.edge; strokeWidth = context.dp(1).toFloat()
+            style = android.graphics.Paint.Style.STROKE; color = 0x33D9BB86; strokeWidth = context.dp(1).toFloat()
         }
-        private val shade = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0x33000000 }
         private val r = android.graphics.RectF()
 
         init { setWillNotDraw(false); clipChildren = true }
@@ -418,14 +465,14 @@ class AppDrawer(
             r.right = mix(origin.right, full.right, when (side) { Side.LEFT -> far; Side.RIGHT -> near; else -> cross })
             r.top = mix(origin.top, full.top, when (side) { Side.BOTTOM -> far; Side.TOP -> near; else -> cross })
             r.bottom = mix(origin.bottom, full.bottom, when (side) { Side.TOP -> far; Side.BOTTOM -> near; else -> cross })
-            val radius = mix(origin.width() / 2f, context.dp(26).toFloat(), cross)
+            val radius = mix(origin.width() / 2f, context.dp(30).toFloat(), cross)
 
             path.reset()
             path.addRoundRect(r, radius, radius, android.graphics.Path.Direction.CW)
             // The glass fades in as it leaves the button, so nothing dark ever sits on it
             val a = (t / 0.22f).coerceAtMost(1f)
             val layer = if (a < 1f) canvas.saveLayerAlpha(null, (a * 255).toInt()) else -1
-            canvas.save(); canvas.translate(0f, context.dp(3).toFloat()); canvas.drawPath(path, shade); canvas.restore()
+            fill.color = tone
             canvas.drawPath(path, fill)
             canvas.drawPath(path, edge)
             canvas.save()
@@ -470,19 +517,21 @@ class AppDrawer(
         override fun getItemCount() = items.size
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
-            val icon = ImageView(context).apply { layoutParams = LinearLayout.LayoutParams(context.dp(48), context.dp(48)) }
+            val icon = ImageView(context).apply { layoutParams = LinearLayout.LayoutParams(context.dp(52), context.dp(52)) }
             val label = TextView(context).apply {
-                textSize = 12f
-                setTextColor(finish.ink)
+                textSize = 11.5f
+                typeface = Kit.sans(context, 400)
+                letterSpacing = 0.01f
+                setTextColor(if (finish.adaptive) 0xE6F1EEE6.toInt() else finish.ink)
                 gravity = Gravity.CENTER
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
-                setPadding(context.dp(2), context.dp(6), context.dp(2), 0)
+                setPadding(context.dp(2), context.dp(8), context.dp(2), 0)
             }
             val cell = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
-                setPadding(0, context.dp(6), 0, context.dp(10))
+                setPadding(0, context.dp(8), 0, context.dp(14))
                 layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT)
                 addView(icon); addView(label)
             }

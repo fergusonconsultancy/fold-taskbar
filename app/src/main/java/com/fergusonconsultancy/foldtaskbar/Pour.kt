@@ -72,7 +72,7 @@ import android.view.animation.PathInterpolator
  * uncovered from it, the slit widening into the whole screen. Nothing flies or scales: the app is
  * already in place and the light simply opens it.
  */
-enum class Look { FANALE, MEMBRANA, FUOCO, ONDA, LAMA }
+enum class Look { FANALE, MEMBRANA, FUOCO, ONDA, LAMA, ZOOM, REVEAL, GROW }
 
 @SuppressLint("ViewConstructor")
 class Pour(context: Context, private val wm: WindowManager) : View(context) {
@@ -191,6 +191,9 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
                 Look.FUOCO -> FUOCO_MS
                 Look.ONDA -> ONDA_MS
                 Look.LAMA -> LAMA_MS
+                Look.ZOOM -> ZOOM_MS
+                Look.REVEAL -> REVEAL_MS
+                Look.GROW -> GROW_MS
                 else -> TRAVEL_MS
             }
             duration = if (quick) (base * 0.68f).toLong() else base
@@ -274,6 +277,9 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             Look.FUOCO -> { drawFuoco(canvas); return }
             Look.ONDA -> { drawOnda(canvas); return }
             Look.LAMA -> { drawLama(canvas); return }
+            Look.ZOOM -> { drawZoom(canvas); return }
+            Look.REVEAL -> { drawReveal(canvas); return }
+            Look.GROW -> { drawGrow(canvas); return }
             else -> Unit
         }
         val a = if (lamp) lampLead.getInterpolation(t) else lead.getInterpolation(t)
@@ -408,6 +414,77 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         if (v <= 0.004f) return
         ground.alpha = (255 * v).toInt()
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), ground)
+    }
+
+    /**
+     * Grow: the whole app at its true proportions scales up out of the icon. The content scales
+     * with it (you see the app itself enlarge), on one deceleration, centred on its path from the
+     * icon to the screen. Never wider or taller than the screen at any moment.
+     */
+    private fun drawGrow(canvas: Canvas) {
+        val g = emph.getInterpolation(t)
+        val aspect = to.height() / to.width().coerceAtLeast(1f)
+        val w0 = iconAt.width(); val w = mix(w0, to.width(), g); val h = w * aspect
+        val cx = mix(iconAt.centerX(), to.centerX(), g); val cy = mix(iconAt.centerY(), to.centerY(), g)
+        r.set(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f)
+        val radius = mix(w0 * 0.28f, 0f, g)
+        path.reset(); path.addRoundRect(r, radius, radius, Path.Direction.CW)
+        canvas.save(); canvas.clipPath(path)
+        paint.alpha = (255 * smooth(t / 0.12f)).toInt()
+        picture(canvas, r)
+        paint.alpha = 255
+        canvas.restore()
+    }
+
+    /**
+     * Reveal: nothing scales. The app is already in place at full size and a window with the
+     * screen's proportions widens from the icon's centre to uncover it, its corners squaring
+     * as it reaches the edges. What moves is only the opening.
+     */
+    private fun drawReveal(canvas: Canvas) {
+        val g = emph.getInterpolation(t)
+        val ox = iconAt.centerX(); val oy = iconAt.centerY()
+        r.set(mix(ox, to.left, g), mix(oy, to.top, g), mix(ox, to.right, g), mix(oy, to.bottom, g))
+        val radius = context.dp(28).toFloat() * (1f - smooth((g - 0.5f) / 0.5f))
+        path.reset(); path.addRoundRect(r, radius, radius, Path.Direction.CW)
+        canvas.save(); canvas.clipPath(path)
+        picture(canvas, to)
+        canvas.restore()
+        // One hairline on the opening's edge while it travels
+        val rim = 1f - smooth((g - 0.3f) / 0.4f)
+        if (rim > 0.02f && !quick) {
+            sheen.strokeWidth = context.dp(1f).toFloat()
+            sheen.color = Color.argb((120 * rim).toInt(), 236, 214, 170)
+            canvas.drawPath(path, sheen)
+        }
+    }
+
+    /**
+     * Zoom: the icon itself becomes the app. Its artwork swells out of the bar at full
+     * strength, then gives way to the screen you left while still travelling, so the last
+     * thing you see of the icon is the app it opened.
+     */
+    private fun drawZoom(canvas: Canvas) {
+        val g = emph.getInterpolation(t)
+        r.set(mix(iconAt.left, to.left, g), mix(iconAt.top, to.top, g), mix(iconAt.right, to.right, g), mix(iconAt.bottom, to.bottom, g))
+        val radius = mix(iconAt.width() * 0.24f, 0f, g)
+        path.reset(); path.addRoundRect(r, radius, radius, Path.Direction.CW)
+        canvas.save(); canvas.clipPath(path)
+        // The ground of the icon's own colour, the app coming up through it
+        fill.color = body; canvas.drawRect(r, fill)
+        val appIn = smooth((t - 0.12f) / 0.38f)
+        paint.alpha = (255 * appIn).toInt()
+        picture(canvas, r)
+        paint.alpha = 255
+        icon?.let { d ->
+            val a = 1f - smooth((t - 0.08f) / 0.32f)
+            if (a > 0.01f) {
+                val s = minOf(r.width(), r.height()) * mix(1f, 0.5f, g)
+                d.setBounds((r.centerX() - s / 2).toInt(), (r.centerY() - s / 2).toInt(), (r.centerX() + s / 2).toInt(), (r.centerY() + s / 2).toInt())
+                d.alpha = (255 * a).toInt(); d.draw(canvas); d.alpha = 255
+            }
+        }
+        canvas.restore()
     }
 
     private val blade = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -662,8 +739,11 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         const val MELT_MS = 90L
         const val FUOCO_MS = 440L
         const val LAMA_MS = 420L
+        const val ZOOM_MS = 400L
+        const val REVEAL_MS = 360L
+        const val GROW_MS = 380L
         const val ONDA_MS = 440L
         /** Longest the picture waits for the real app before dissolving anyway. */
-        const val ARRIVAL_WAIT_MS = 420L
+        const val ARRIVAL_WAIT_MS = 900L
     }
 }

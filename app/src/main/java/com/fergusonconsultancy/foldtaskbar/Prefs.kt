@@ -14,16 +14,17 @@ enum class Motion(val label: String) {
     FUOCO("Fuoco: the app behind falls out of focus while the new one rises from its icon, soft, and sharpens as it fills the screen (drawn by the bar)"),
     ONDA("Onda: the app wells up from its icon in a widening circle as the app behind falls out of focus (drawn by the bar)"),
     LAMA("Lama: a blade of light is drawn out of the icon along the bar and the app is uncovered from it, the slit widening into the screen (drawn by the bar)"),
-    ZOOM("Zoom: a picture of where you left the app grows out of the icon itself and dissolves into the live app"),
-    REVEAL("Reveal: the app is already full size; a window opens from a point at the icon and uncovers it"),
-    GROW("Grow: the live app itself scales up out of the icon's square"),
+    ZOOM("Zoom: the icon itself swells into the app, its artwork giving way to the screen you left (drawn by the bar)"),
+    REVEAL("Reveal: nothing moves but the opening. The app is already in place and a window widens from the icon to uncover it (drawn by the bar)"),
+    GROW("Grow: the whole app, at its true proportions, scales up out of the icon (drawn by the bar)"),
     SYSTEM("System animation"),
     ;
 
     /** The motions the bar draws itself, and how. */
     val look: Look? get() = when (this) {
         FANALE -> Look.FANALE; MEMBRANA -> Look.MEMBRANA; FUOCO -> Look.FUOCO
-        ONDA -> Look.ONDA; LAMA -> Look.LAMA; else -> null
+        ONDA -> Look.ONDA; LAMA -> Look.LAMA
+        ZOOM -> Look.ZOOM; REVEAL -> Look.REVEAL; GROW -> Look.GROW; SYSTEM -> null
     }
 }
 

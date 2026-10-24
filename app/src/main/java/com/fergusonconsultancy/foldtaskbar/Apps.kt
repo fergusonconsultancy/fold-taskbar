@@ -108,6 +108,24 @@ class Apps(private val context: Context) {
      * Brings the app forward. The motion is a request: if One UI refuses it, the app opens
      * anyway with the system animation. An animation must never stop an app opening.
      */
+    /**
+     * 25 Oct 2026: when the bar draws the switch, the app is started with no system animation.
+     * Until now One UI played its own task switch underneath ours (the old app shrinking away
+     * on grey, the new one sliding in and settling on a spring), and when our picture handed
+     * over, that settling was still going: the bounce. With FLAG_ACTIVITY_NO_ANIMATION the app
+     * simply appears, still, under the bar's picture. Falls back to the normal launch if refused.
+     */
+    fun openQuiet(pkg: String): Boolean {
+        val e = entry(pkg) ?: return false
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(e.component)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+        val quiet = runCatching { context.startActivity(intent) }
+        if (quiet.isSuccess) return true
+        if (!loggedQuietRefused) { loggedQuietRefused = true; EventLog.add(context, "Quiet launch refused (${quiet.exceptionOrNull()?.javaClass?.simpleName}): using the normal launch") }
+        return runCatching { launcher.startMainActivity(e.component, user, null, null) }.isSuccess
+    }
+    private var loggedQuietRefused = false
+
     fun open(pkg: String, source: android.view.View? = null, snapshot: android.graphics.Bitmap? = null): Boolean {
         val e = entry(pkg) ?: return false
         val v = source?.takeIf { it.isAttachedToWindow && it.width > 0 }
@@ -131,41 +149,13 @@ class Apps(private val context: Context) {
     private val refused = mutableSetOf<Motion>()
 
     /**
-     * Zoom hands the system a small picture of the app's last screen, centred on the icon;
-     * the system grows it to full size and dissolves it into the live app, so you appear
-     * to travel into the app you left. Without a picture, Zoom falls back to Reveal.
+     * System animation only. Every other motion is drawn by the bar over a quiet launch, because
+     * One UI ignores the classic launch animations (scale-up, clip-reveal, thumbnail) for app
+     * switches and plays its own task switch instead: the reason Zoom, Reveal and Grow all
+     * looked like Android's own animation.
      */
-    private fun motionOptions(v: android.view.View, motion: Motion, snapshot: android.graphics.Bitmap?): ActivityOptions? {
-        if (motion in refused) return null
-        return when (motion) {
-            Motion.FANALE, Motion.MEMBRANA, Motion.FUOCO, Motion.ONDA, Motion.LAMA -> ActivityOptions.makeCustomAnimation(context, R.anim.pour_enter, R.anim.pour_hold)
-            // 24 Oct 2026: the three system motions, pulled apart so each is unmistakable.
-            // Zoom is a picture: it starts as exactly the icon (same size, same corners), so the
-            // icon itself becomes the screen you left. Without a picture it used to fall back to
-            // Reveal, which made the two identical; now it zooms the icon's own image instead.
-            Motion.ZOOM -> {
-                val tw = v.width.coerceAtLeast(1)
-                val src = snapshot ?: iconPicture(v)
-                if (src == null) ActivityOptions.makeScaleUpAnimation(v, 0, 0, v.width, v.height)
-                else {
-                    val th = if (snapshot != null) (tw * src.height / src.width.toFloat()).toInt().coerceAtLeast(1) else tw
-                    val thumb = rounded(android.graphics.Bitmap.createScaledBitmap(src, tw, th, true), tw * 0.24f)
-                    ActivityOptions.makeThumbnailScaleUpAnimation(v, thumb, 0, v.height / 2 - th / 2)
-                }
-            }
-            // Reveal: no scaling at all. The app is already full size; a window opens from a single point at the icon's centre
-            Motion.REVEAL -> ActivityOptions.makeClipRevealAnimation(v, v.width / 2, v.height / 2, 0, 0)
-            // Grow: the live app scales up out of the icon's square, content and all
-            Motion.GROW -> ActivityOptions.makeScaleUpAnimation(v, 0, 0, v.width, v.height)
-            Motion.SYSTEM -> null
-        }
-    }
-
-    /** The icon as it is drawn on the bar, for Zoom when there is no picture of the app yet. */
-    private fun iconPicture(v: android.view.View): android.graphics.Bitmap? = runCatching {
-        val b = android.graphics.Bitmap.createBitmap(v.width.coerceAtLeast(1), v.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
-        v.draw(android.graphics.Canvas(b)); b
-    }.getOrNull()
+    @Suppress("UNUSED_PARAMETER")
+    private fun motionOptions(v: android.view.View, motion: Motion, snapshot: android.graphics.Bitmap?): ActivityOptions? = null
 
     /** Opens the app beside whatever is already on screen. */
     fun openAdjacent(pkg: String): Boolean {
