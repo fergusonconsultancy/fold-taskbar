@@ -49,6 +49,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private val capsules = mutableListOf<Capsule>()
     private val hosts = mutableListOf<BarHost>()
     private var layoutKey = ""
+    private var layoutLook = ""
+    private var pendingKey: String? = null
+    private var pendingKeyAt = 0L
+    /** The screen the bar was laid out for: what every placement measures against, so a passing change cannot move it. */
+    private var layoutBounds: Rect? = null
     private var barOn = false
     private var menuWindow: View? = null
     private lateinit var drawer: AppDrawer
@@ -133,12 +138,28 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     override fun onInterrupt() = Unit
 
+    private var lastConfig: Configuration? = null
+
+    /**
+     * Opening an app often changes the configuration for a moment (One UI passes the new app's
+     * window configuration around), and rebuilding the bar on every one of those made it flash
+     * in the wrong place mid-switch (24 Oct 2026). Only changes that alter how the bar looks
+     * (density, font scale, language, dark mode, theme assets) rebuild it now; anything that
+     * moves it waits until the screen has settled (see apply).
+     */
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        apps.forget()
-        layoutKey = ""
-        removeTab()
-        warmApps(rebuildList = false)
+        val diff = lastConfig?.diff(newConfig) ?: -1
+        lastConfig = Configuration(newConfig)
+        val looks = android.content.pm.ActivityInfo.CONFIG_DENSITY or android.content.pm.ActivityInfo.CONFIG_FONT_SCALE or
+            android.content.pm.ActivityInfo.CONFIG_LOCALE or android.content.pm.ActivityInfo.CONFIG_UI_MODE or
+            android.content.pm.ActivityInfo.CONFIG_ASSETS_PATHS
+        if (diff and looks != 0) {
+            apps.forget()
+            layoutKey = ""
+            removeTab()
+            warmApps(rebuildList = false)
+        }
         scheduleScan()
     }
 
@@ -290,12 +311,26 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val finish = Prefs.finish(this)
         val iconDp = Prefs.iconDp(this)
         val bounds = wm.currentWindowMetrics.bounds
-        val key = "$shape|$finish|$iconDp|${bounds.width()}x${bounds.height()}|${navInset()}"
+        val geometry = "${bounds.width()}x${bounds.height()}|${navInset()}|${resources.configuration.densityDpi}"
+        val key = "$shape|$finish|$iconDp|$geometry"
         if (key != layoutKey || hosts.isEmpty()) {
-            removeBar()
-            buildBar(shape, finish, iconDp)
-            layoutKey = key
-        }
+            val onlyGeometry = hosts.isNotEmpty() && layoutLook == "$shape|$finish|$iconDp"
+            val now = SystemClock.uptimeMillis()
+            if (onlyGeometry && (pendingKey != key || now - pendingKeyAt < SETTLE_MS)) {
+                // The screen changed shape or insets: wait until it holds still before moving the
+                // bar, so a passing change during an app switch never shows (24 Oct 2026)
+                if (pendingKey != key) { pendingKey = key; pendingKeyAt = now }
+                main.removeCallbacks(applyNow); main.postDelayed(applyNow, SETTLE_MS)
+            } else {
+                pendingKey = null
+                removeBar()
+                layoutBounds = Rect(bounds)
+                buildBar(shape, finish, iconDp)
+                layoutKey = key
+                layoutLook = "$shape|$finish|$iconDp"
+                if (onlyGeometry) EventLog.add(this, "Screen settled at $geometry: bar laid out again")
+            }
+        } else pendingKey = null
 
         val groups = slotGroups(shape, iconDp, bounds.width())
         val active = onScreen.toSet() + Prefs.pairs(this)
@@ -374,6 +409,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     private fun buildBar(shape: Shape, finish: Finish, iconDp: Int) {
+        // The switch animation lives under the bar: the bar is the constant across apps, never
+        // dimmed, blurred or covered while the next app arrives beneath it
+        pour.ensure()
         val count = if (shape == Shape.PAIR) 2 else 1
         repeat(count) { i ->
             val capsule = Capsule(this, apps, finish, iconDp, this)
@@ -395,7 +433,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     // ---- Where the bar sits -------------------------------------------------------
 
-    private fun screen() = wm.currentWindowMetrics.bounds
+    private fun screen(): Rect = layoutBounds?.takeIf { hosts.isNotEmpty() } ?: wm.currentWindowMetrics.bounds
     private fun statusInset() =
         wm.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars()).top
     private fun navInset(): Int =
@@ -921,6 +959,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private fun reportOpenTime() {
         val p = pendingOpen ?: return
         if (onScreen.firstOrNull() == p) {
+            if (::pour.isInitialized) pour.arrived()
             val ms = SystemClock.uptimeMillis() - pendingOpenAt
             EventLog.add(this, "Opened ${apps.entry(p)?.label ?: p} in ${ms}ms")
             pendingOpen = null
@@ -1361,6 +1400,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     private fun unfocus() {
         main.removeCallbacks(unfocusLater)
+        // Whatever happened during the drag, every icon comes back exactly to rest
+        main.postDelayed({ capsules.forEach { it.settleAll() } }, 360)
         if (focused == null) return
         animateFocus(0f)
     }
@@ -1478,7 +1519,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         // Hear how the drag ended, wherever it was dropped
         from.setOnDragListener { _, ev ->
             if (ev.action == android.view.DragEvent.ACTION_DRAG_ENDED) {
-                from.setOnDragListener(null)
+                // Hand the bar back its own listener (24 Oct 2026: clearing it left the bar deaf to
+                // every later drag), and bring every icon back to rest straight away
+                from.setOnDragListener(if (from is BarHost) dragEnd else null)
+                systemDragging = false
+                unfocus()
                 val handled = ev.result
                 main.postDelayed({
                     bg.post {
@@ -1488,7 +1533,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                     }
                 }, 1500)
             }
-            true
+            // Let go over the bar: nothing opens
+            ev.action != android.view.DragEvent.ACTION_DROP
         }
         EventLog.add(this, "Android's split drop zones: drag handed over for ${e.label}")
         return true
@@ -1683,9 +1729,16 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             }
         }
         val rebuilt = drawer.attach(Prefs.finish(this), rect, side)
-        // The pour sits above the grid, so an app opened from the grid swells over it
-        if (rebuilt) pour.detach()
-        pour.ensure()
+        // The pour sits above the grid, so an app opened from the grid swells over it, and
+        // under the bar, which is lifted back above both
+        if (rebuilt) {
+            pour.detach()
+            pour.ensure()
+            hosts.forEach { h ->
+                val lp = h.layoutParams as? WindowManager.LayoutParams ?: return@forEach
+                runCatching { wm.removeViewImmediate(h); wm.addView(h, lp) }
+            }
+        } else pour.ensure()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -1697,6 +1750,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     companion object {
+        /** How long a change of screen shape or insets must hold before the bar moves for it. */
+        const val SETTLE_MS = 320L
+
         @Volatile var running = false
         @Volatile var instance: TaskbarService? = null
         private const val SAMPLE_EVERY_MS = 2000L
