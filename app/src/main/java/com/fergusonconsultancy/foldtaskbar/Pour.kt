@@ -44,6 +44,27 @@ import android.view.animation.PathInterpolator
  * the edges slow, the curves relax and the membrane snaps taut, with a fine meniscus of light
  * along it. Nothing on screen is decoration: every curve is a measure of speed.
  */
+/**
+ * The three depth switches (24 Oct 2026), after the notification-shade studies Mechack shared:
+ * the screen behind is not covered but falls out of focus (the system blurs the live app under
+ * this window), everything arrives from the icon you touched, nearest first, and settles into
+ * focus. Concentrato: switching again within 700ms is cycling, so the next switch is quicker and
+ * shallower; the faster you cycle, the emptier it gets.
+ *
+ * Fuoco: the app's picture rises out of the icon soft and oversized, the app behind falls out of
+ * focus, and the picture sharpens as it contracts into the screen; a focus pull, then the live
+ * app takes over and the background returns to focus.
+ *
+ * Cascata: the picture arrives as a trencadís, Gaudí's broken-tile mosaic. Its tiles leave the
+ * icon on arcs, nearest first, each turning and swelling into its place, and close their seams
+ * as they land.
+ *
+ * Onda: the app wells up from the icon like water from a spring, a ripple whose liquid edge
+ * relaxes into a perfect circle as it spreads, a fine meniscus on its rim, the content inside
+ * settling as the water does.
+ */
+enum class Look { POUR, FANALE, MEMBRANA, FUOCO, CASCATA, ONDA }
+
 @SuppressLint("ViewConstructor")
 class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
@@ -56,6 +77,12 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private var running: Animator? = null
     private var lamp = false
     private var membrane = false
+    private var look = Look.POUR
+    private var quick = false
+    private var lastPlayAt = 0L
+    private var concentrato = true
+    private val tile = RectF()
+    private val tileSrc = Rect()
     // Membrana: last frame's edges and time, for each edge's speed; and the bow each edge carries
     private val last = RectF()
     private var lastT = -1f
@@ -86,6 +113,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private val src = Rect()
 
     private val lead = OvershootInterpolator(1.15f)
+    private val lift = OvershootInterpolator(1.25f)
     private val follow = PathInterpolator(0.3f, 0f, 0f, 1f)
     private val trail = PathInterpolator(0.55f, 0f, 0.15f, 1f)
     // Fanale: the lit edge crosses the screen on a steadier curve, so the light is seen travelling
@@ -107,9 +135,14 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     /** Plays the pour from [source] (an icon on screen) over [screen]. */
-    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, lamp: Boolean = false, membrane: Boolean = false) {
-        this.lamp = lamp
-        this.membrane = membrane
+    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, lamp: Boolean = false, membrane: Boolean = false, look: Look? = null, concentrato: Boolean = true) {
+        this.look = look ?: when { lamp -> Look.FANALE; membrane -> Look.MEMBRANA; else -> Look.POUR }
+        this.lamp = this.look == Look.FANALE
+        this.membrane = this.look == Look.MEMBRANA
+        this.concentrato = concentrato
+        val now = android.os.SystemClock.uptimeMillis()
+        quick = concentrato && now - lastPlayAt < 700
+        lastPlayAt = now
         lastT = -1f
         bow.fill(0f)
         ensure()
@@ -131,9 +164,16 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         visibility = VISIBLE
         invalidate()
         running = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (lamp) LAMP_TRAVEL_MS else TRAVEL_MS
+            val base = when (this@Pour.look) {
+                Look.FANALE -> LAMP_TRAVEL_MS
+                Look.FUOCO -> FUOCO_MS
+                Look.CASCATA -> CASCATA_MS
+                Look.ONDA -> ONDA_MS
+                else -> TRAVEL_MS
+            }
+            duration = if (quick) (base * 0.68f).toLong() else base
             interpolator = null
-            addUpdateListener { t = it.animatedFraction; invalidate() }
+            addUpdateListener { t = it.animatedFraction; depthFrame(); invalidate() }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) = melt()
             })
@@ -142,18 +182,58 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     private fun melt() {
+        val from = behind
         animate().alpha(0f).setDuration(MELT_MS).setInterpolator(follow)
-            .withEndAction { visibility = INVISIBLE; picture = null; icon = null }
+            // The background returns to focus as the picture melts into the live app
+            .setUpdateListener { setBehindBlur(from * (1f - it.animatedFraction)) }
+            .withEndAction { setBehindBlur(0f); setRenderEffect(null); visibility = INVISIBLE; picture = null; icon = null }
             .start()
     }
 
     fun cancel() {
         running?.cancel()
         animate().cancel()
+        setBehindBlur(0f)
+        setRenderEffect(null)
         visibility = INVISIBLE
     }
 
+    // ---- Depth: the live app behind falls out of focus ------------------------------------
+
+    private var behind = 0f
+
+    private val blurSupported get() = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+        runCatching { wm.isCrossWindowBlurEnabled }.getOrDefault(false)
+
+    /** Blurs whatever is behind this window, the live app and the bar, by [px]. */
+    private fun setBehindBlur(px: Float) {
+        behind = px
+        if (!attached || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) return
+        val lp = layoutParams as? WindowManager.LayoutParams ?: return
+        val want = if (blurSupported) px.toInt().coerceAtLeast(0) else 0
+        if (kotlin.math.abs(lp.blurBehindRadius - want) < 1 && !(want == 0 && lp.blurBehindRadius != 0)) return
+        lp.blurBehindRadius = want
+        runCatching { wm.updateViewLayout(this, lp) }
+    }
+
+    /** Per frame of the depth looks: how far out of focus the background is, and the picture's own focus pull. */
+    private fun depthFrame() {
+        if (look != Look.FUOCO && look != Look.CASCATA && look != Look.ONDA) return
+        val deep = context.dp(if (quick) 18 else 42).toFloat()
+        setBehindBlur(deep * smooth(t / 0.35f))
+        if (look == Look.FUOCO && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val r = context.dp(if (quick) 12 else 26).toFloat() * (1f - smooth((t - 0.08f) / 0.66f))
+            setRenderEffect(if (r < 0.5f) null else android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.CLAMP))
+        }
+    }
+
     override fun onDraw(canvas: Canvas) {
+        when (look) {
+            Look.FUOCO -> { drawFuoco(canvas); return }
+            Look.CASCATA -> { drawCascata(canvas); return }
+            Look.ONDA -> { drawOnda(canvas); return }
+            else -> Unit
+        }
         val a = if (lamp) lampLead.getInterpolation(t) else lead.getInterpolation(t)
         val b = follow.getInterpolation(((t - 0.06f) / 0.94f).coerceIn(0f, 1f))
         val c = trail.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
@@ -248,6 +328,132 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         path.quadTo(l + 2f * bow[0] * 0.5f, (tp + b) / 2f, l, tp + rad)
         path.quadTo(l, tp, l + rad, tp)
         path.close()
+    }
+
+    /** Draws the picture (or the icon's tone) into [dst], centre-cropped from the region [region] of the screen. */
+    private fun picture(canvas: Canvas, dst: RectF, region: RectF? = null) {
+        val pic = picture
+        if (pic == null) { fill.color = body; canvas.drawRect(dst, fill); return }
+        if (region == null) {
+            val scale = maxOf(dst.width() / pic.width, dst.height() / pic.height)
+            val sw = (dst.width() / scale).toInt().coerceIn(1, pic.width)
+            val sh = (dst.height() / scale).toInt().coerceIn(1, pic.height)
+            src.set((pic.width - sw) / 2, (pic.height - sh) / 2, (pic.width + sw) / 2, (pic.height + sh) / 2)
+        } else {
+            val kx = pic.width / to.width().coerceAtLeast(1f); val ky = pic.height / to.height().coerceAtLeast(1f)
+            src.set((region.left * kx).toInt(), (region.top * ky).toInt(), (region.right * kx).toInt().coerceAtMost(pic.width), (region.bottom * ky).toInt().coerceAtMost(pic.height))
+        }
+        canvas.drawBitmap(pic, src, dst, paint)
+    }
+
+    /** The background's dimming, deepest mid-switch: depth, not cover. */
+    private fun depthDim(canvas: Canvas) {
+        val d = (if (quick) 0.14f else 0.24f) * smooth(t / 0.3f)
+        if (d > 0.004f) { dim.alpha = (255 * d).toInt(); canvas.drawRect(to, dim) }
+    }
+
+    /** Fuoco: rises soft and oversized from the icon, then contracts into the screen as it sharpens. */
+    private fun drawFuoco(canvas: Canvas) {
+        depthDim(canvas)
+        val g = follow.getInterpolation((t / 0.62f).coerceAtMost(1f))
+        val over = to.width() * 0.045f
+        val settle = smooth((t - 0.5f) / 0.5f)
+        val tl = mix(-over, 0f, settle); val tt = mix(-over * 0.86f, 0f, settle)
+        r.set(mix(from.left, to.left + tl, g), mix(from.top, to.top + tt, g), mix(from.right, to.right - tl, g), mix(from.bottom, to.bottom - tt, g))
+        val radius = mix(from.width() * 0.32f, context.dp(30).toFloat(), g)
+        path.reset(); path.addRoundRect(r, radius, radius, Path.Direction.CW)
+        val a = smooth(t / 0.28f)
+        canvas.save(); canvas.clipPath(path)
+        paint.alpha = (255 * a).toInt()
+        picture(canvas, r)
+        paint.alpha = 255
+        canvas.restore()
+    }
+
+    /** Cascata: a trencadís of the picture, its tiles arcing out of the icon nearest first. */
+    private fun drawCascata(canvas: Canvas) {
+        depthDim(canvas)
+        val cols = if (to.width() >= to.height()) 6 else 4
+        val rows = (cols * to.height() / to.width()).toInt().coerceAtLeast(3)
+        val tw = to.width() / cols; val th = to.height() / rows
+        val ox = iconAt.centerX(); val oy = iconAt.centerY()
+        val far = kotlin.math.hypot(to.width(), to.height())
+        val stagger = if (quick) 0.18f else 0.34f
+        val span = 1f - stagger - 0.06f
+        val gap = context.dp(3).toFloat()
+        // Every tile down: the mosaic is one picture again, with no seams left to show
+        if (t >= stagger + span) { r.set(to); picture(canvas, r); return }
+        for (row in 0 until rows) for (col in 0 until cols) {
+            val tx = to.left + col * tw; val ty = to.top + row * th
+            val cx = tx + tw / 2f; val cy = ty + th / 2f
+            val dist = kotlin.math.hypot(cx - ox, cy - oy)
+            val u = ((t - stagger * dist / far) / span).coerceIn(0f, 1f)
+            if (u <= 0f) continue
+            val e = lift.getInterpolation(u)
+            // An arc, not a line: the control point sits off the straight path, alternating side
+            val side = if ((row + col) % 2 == 0) 1f else -1f
+            val mx2 = (ox + cx) / 2f - (cy - oy) * 0.16f * side
+            val my2 = (oy + cy) / 2f + (cx - ox) * 0.16f * side
+            val k = e.coerceAtMost(1f)
+            val px = (1 - k) * (1 - k) * ox + 2 * (1 - k) * k * mx2 + k * k * cx + (e - k) * (cx - ox) * 0.2f
+            val py = (1 - k) * (1 - k) * oy + 2 * (1 - k) * k * my2 + k * k * cy + (e - k) * (cy - oy) * 0.2f
+            val sc = mix(iconAt.width() / tw, 1f, e)
+            val seam = gap * (1f - smooth((u - 0.45f) / 0.35f))
+            val rad = context.dp(14).toFloat() * (1f - smooth((u - 0.5f) / 0.35f))
+            if (u >= 1f) {
+                // Landed: drawn edge to edge, a hair oversize, so neighbours meet without a seam
+                r.set(tx, ty, tx + tw, ty + th)
+                tile.set(tx - 0.75f, ty - 0.75f, tx + tw + 0.75f, ty + th + 0.75f)
+                picture(canvas, tile, r)
+                continue
+            }
+            canvas.save()
+            canvas.translate(px, py)
+            canvas.rotate(10f * side * (1f - k))
+            canvas.scale(sc, sc)
+            tile.set(-tw / 2f + seam, -th / 2f + seam, tw / 2f - seam, th / 2f - seam)
+            path.reset(); path.addRoundRect(tile, rad, rad, Path.Direction.CW)
+            canvas.clipPath(path)
+            paint.alpha = (255 * smooth(u / 0.22f)).toInt()
+            r.set(tx, ty, tx + tw, ty + th)
+            tile.set(-tw / 2f, -th / 2f, tw / 2f, th / 2f)
+            picture(canvas, tile, r)
+            paint.alpha = 255
+            canvas.restore()
+        }
+    }
+
+    /** Onda: wells up from the icon, a liquid edge relaxing into a circle as it spreads. */
+    private fun drawOnda(canvas: Canvas) {
+        depthDim(canvas)
+        val ox = iconAt.centerX(); val oy = iconAt.centerY()
+        val reach = maxOf(kotlin.math.hypot(ox - to.left, oy - to.top), kotlin.math.hypot(ox - to.right, oy - to.top),
+            kotlin.math.hypot(ox - to.left, oy - to.bottom), kotlin.math.hypot(ox - to.right, oy - to.bottom))
+        val g = follow.getInterpolation((t / 0.85f).coerceAtMost(1f))
+        val rad = mix(iconAt.width() * 0.45f, reach * 1.02f, g)
+        // The edge is liquid at first and relaxes into a circle: amplitude dies away as it spreads
+        val amp = 0.07f * (1f - g) * (1f - g)
+        val phase = t * 7f
+        path.reset()
+        val n = 72
+        for (i in 0..n) {
+            val th = (2 * Math.PI * i / n).toFloat()
+            val rr = rad * (1f + amp * kotlin.math.sin(5f * th + phase) + amp * 0.5f * kotlin.math.sin(3f * th - phase * 1.3f))
+            val x = ox + rr * kotlin.math.cos(th); val y = oy + rr * kotlin.math.sin(th)
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        path.close()
+        canvas.save(); canvas.clipPath(path)
+        // The content settles as the water does: from a slight swell to rest, about the spring
+        val swell = 1f + 0.07f * (1f - g)
+        canvas.save(); canvas.scale(swell, swell, ox, oy)
+        r.set(to)
+        picture(canvas, r)
+        canvas.restore()
+        canvas.restore()
+        sheen.strokeWidth = context.dp(1.5f).toFloat()
+        sheen.color = Color.argb((160 * (1f - g)).toInt().coerceIn(0, 255), 236, 214, 170)
+        if (!quick) canvas.drawPath(path, sheen)
     }
 
     private fun smooth(x: Float): Float { val c = x.coerceIn(0f, 1f); return c * c * (3f - 2f * c) }
@@ -375,6 +581,11 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         PixelFormat.TRANSLUCENT,
     ).apply {
         gravity = Gravity.TOP or Gravity.START
+        // Depth: lets the switch blur the live app behind it (Android 12 and later, where One UI allows)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            flags = flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+            blurBehindRadius = 0
+        }
         setFitInsetsTypes(0)
         layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
     }
@@ -383,5 +594,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         const val TRAVEL_MS = 460L
         const val LAMP_TRAVEL_MS = 620L
         const val MELT_MS = 240L
+        const val FUOCO_MS = 560L
+        const val CASCATA_MS = 640L
+        const val ONDA_MS = 560L
     }
 }

@@ -713,7 +713,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** The app to picture for Zoom: alone on screen for a moment, not pictured recently. */
     private fun snapshotWanted(): String? {
-        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.POUR, Motion.FANALE, Motion.MEMBRANA)) return null
+        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.POUR, Motion.FANALE, Motion.MEMBRANA, Motion.FUOCO, Motion.CASCATA, Motion.ONDA)) return null
         val front = onScreen.singleOrNull()?.takeIf { it !in noRecents && it != packageName } ?: return null
         val now = SystemClock.uptimeMillis()
         if (now - frontSince < 900) return null
@@ -1019,8 +1019,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val pic = snapshots[pkg]
         apps.open(pkg, source, pic)
         val motion = Prefs.motion(this)
-        if ((motion == Motion.POUR || motion == Motion.FANALE || motion == Motion.MEMBRANA) && source != null && source.isAttachedToWindow && isMainScreen()) {
-            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), lamp = motion == Motion.FANALE, membrane = motion == Motion.MEMBRANA) }
+        val look = motion.look
+        if (look != null && source != null && source.isAttachedToWindow && isMainScreen()) {
+            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), look = look, concentrato = Prefs.concentrato(this)) }
                 .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }
         }
         closePanels()

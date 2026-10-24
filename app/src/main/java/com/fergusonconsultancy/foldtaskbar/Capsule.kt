@@ -364,6 +364,11 @@ class Capsule(
     private var lightAnim: android.animation.ValueAnimator? = null
     private val lightCore = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
     private val lightHalo = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val lightGlow = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+    /** Perceived brightness of a colour, 0 to 1 (alpha ignored: the glass is mostly opaque). */
+    private fun luminance(c: Int): Float =
+        (0.2126f * ((c shr 16) and 255) + 0.7152f * ((c shr 8) and 255) + 0.0722f * (c and 255)) / 255f
     private val lead = android.view.animation.OvershootInterpolator(1.1f)
     private val trail = android.view.animation.PathInterpolator(0.55f, 0f, 0.15f, 1f)
 
@@ -468,8 +473,8 @@ class Capsule(
     override fun dispatchDraw(canvas: Canvas) {
         super.dispatchDraw(canvas)
         if (lights.isEmpty()) return
-        val restLen = context.dp(iconDp * 0.34f).toFloat()
-        val restThick = context.dp(3).toFloat()
+        val restLen = context.dp(iconDp * 0.42f).toFloat()
+        val restThick = context.dp(4).toFloat()
         for (l in lights) {
             val r = l.now
             val len = if (vertical && l.travel) r.height() else r.width()
@@ -479,9 +484,21 @@ class Capsule(
             val cx = r.centerX(); val cy = r.centerY()
             val draw = if (vertical && l.travel) RectF(cx - thick / 2, r.top, cx + thick / 2, r.bottom)
             else RectF(r.left, cy - thick / 2, r.right, cy + thick / 2)
-            val colour = glows[zoneAt(if (vertical) cy else cx)]
-            lightHalo.color = (colour and 0x00FFFFFF) or ((0x40 * lightAlpha).toInt() shl 24)
-            val halo = RectF(draw).apply { inset(-thick * 0.9f, -thick * 0.9f) }
+            // Adaptive pill (24 Oct 2026): it reads the glass under it, zone by zone, and takes
+            // whichever tone stands out most, ringed in the opposite tone like a pointer, so it
+            // stays clear over light glass, dark glass, lacquer or a membrane tinted by any app
+            val z = zoneAt(if (vertical) cy else cx)
+            val darkGlass = luminance(fills[z]) < 0.5f
+            val colour = if (darkGlass) PILL_LIGHT else PILL_DARK
+            val ring = if (darkGlass) 0x8C000000.toInt() else 0x99FFFFFF.toInt()
+            val halo = RectF(draw).apply { inset(-context.dp(1.5f).toFloat(), -context.dp(1.5f).toFloat()) }
+            // A soft glow of its own tone, only over dark glass, where light can glow
+            if (darkGlass) {
+                val glowR = RectF(draw).apply { inset(-thick * 1.1f, -thick * 1.1f) }
+                lightGlow.color = (colour and 0x00FFFFFF) or ((0x38 * lightAlpha * (1f - rest)).toInt() shl 24)
+                canvas.drawRoundRect(glowR, glowR.height().coerceAtMost(glowR.width()) / 2, glowR.height().coerceAtMost(glowR.width()) / 2, lightGlow)
+            }
+            lightHalo.color = (ring and 0x00FFFFFF) or (((ring ushr 24) * lightAlpha * (1f - rest)).toInt() shl 24)
             canvas.drawRoundRect(halo, halo.height().coerceAtMost(halo.width()) / 2, halo.height().coerceAtMost(halo.width()) / 2, lightHalo)
             lightCore.color = colour
             lightCore.alpha = (255 * lightAlpha * (1f - rest)).toInt()
@@ -718,3 +735,7 @@ class GlyphView(context: Context, private val kind: Glyph, ink: Int) : View(cont
         }
     }
 }
+
+/** The active-app pill's two faces: light champagne over dark glass, deep bronze over light. */
+private const val PILL_LIGHT = 0xFFF6E4BC.toInt()
+private const val PILL_DARK = 0xFF3A2A0E.toInt()
