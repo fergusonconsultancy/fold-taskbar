@@ -144,7 +144,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
      * Opening an app often changes the configuration for a moment (One UI passes the new app's
      * window configuration around), and rebuilding the bar on every one of those made it flash
      * in the wrong place mid-switch (24 Oct 2026). Only changes that alter how the bar looks
-     * (density, font scale, language, dark mode, theme assets) rebuild it now; anything that
+     * (density, font scale, language, dark mode) rebuild it now; anything that
      * moves it waits until the screen has settled (see apply).
      */
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -152,8 +152,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val diff = lastConfig?.diff(newConfig) ?: -1
         lastConfig = Configuration(newConfig)
         val looks = android.content.pm.ActivityInfo.CONFIG_DENSITY or android.content.pm.ActivityInfo.CONFIG_FONT_SCALE or
-            android.content.pm.ActivityInfo.CONFIG_LOCALE or android.content.pm.ActivityInfo.CONFIG_UI_MODE or
-            android.content.pm.ActivityInfo.CONFIG_ASSETS_PATHS
+            android.content.pm.ActivityInfo.CONFIG_LOCALE or android.content.pm.ActivityInfo.CONFIG_UI_MODE
         if (diff and looks != 0) {
             apps.forget()
             layoutKey = ""
