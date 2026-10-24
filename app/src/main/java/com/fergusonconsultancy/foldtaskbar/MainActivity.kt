@@ -249,26 +249,18 @@ class MainActivity : Activity() {
         when (m) {
             Motion.SYSTEM -> Unit
             Motion.FUOCO -> {
-                // The app behind out of focus, the new one sharp and a touch oversized
+                // The app behind out of focus, the new one rising sharp from the icon
                 p.color = Color.argb(140, 120, 132, 126)
                 for (k in 0..5) c.drawCircle(r.left + r.width() * (0.1f + 0.15f * k), r.centerY() + (if (k % 2 == 0) -6f else 6f), r.height() * 0.22f, p)
-                val big = RectF(win).apply { inset(-win.width() * 0.04f, -win.height() * 0.04f) }
-                p.color = Color.rgb(98, 116, 106); c.drawRoundRect(big, 8f, 8f, p)
-                p.style = Paint.Style.STROKE; p.strokeWidth = 1.4f; p.color = 0x66F6F1E6; c.drawRoundRect(big, 8f, 8f, p); p.style = Paint.Style.FILL
+                p.color = Color.rgb(98, 116, 106); c.drawRoundRect(win, 8f, 8f, p)
             }
-            Motion.CASCATA -> {
-                // Tiles arcing out of the icon, nearest first, the farthest still in flight
-                val cols = 4; val rows = 3
-                val tw = win.width() / cols; val th = win.height() / rows
-                for (row in 0 until rows) for (col in 0 until cols) {
-                    val landed = col >= 1 || row == 1
-                    val tx = win.left + col * tw; val ty = win.top + row * th
-                    p.color = if (landed) Color.rgb(98, 116, 106) else Color.rgb(78, 94, 86)
-                    c.save()
-                    if (!landed) { c.translate(-tw * 0.25f, (row - 1) * th * 0.3f); c.rotate(if (row == 0) -10f else 10f, tx + tw / 2, ty + th / 2) }
-                    c.drawRoundRect(tx + 1.5f, ty + 1.5f, tx + tw - 1.5f, ty + th - 1.5f, 3f, 3f, p)
-                    c.restore()
-                }
+            Motion.LAMA -> {
+                // The slit: the app uncovered between two lips of champagne light, drawn from the icon
+                val slit = RectF(win.left, win.centerY() - win.height() * 0.24f, win.right, win.centerY() + win.height() * 0.24f)
+                p.color = Color.rgb(98, 116, 106); c.drawRect(slit, p)
+                p.color = Kit.CHAMPAGNE
+                c.drawRect(win.left, slit.top - 1f, icon.centerX(), slit.top + 1f, p)
+                c.drawRect(win.left, slit.bottom - 1f, icon.centerX(), slit.bottom + 1f, p)
             }
             Motion.ONDA -> {
                 // A ripple welling up from the icon, its rim a fine meniscus
@@ -314,7 +306,10 @@ class MainActivity : Activity() {
             "Smoked glass" to "Reads the screen beyond each of eight stretches of the bar. Dark over light content, light over dark, with a trace of the colour underneath.",
             "Membrane" to "Adaptive like smoked glass, but thin and translucent, taking far more of the colour beneath, so the bar seems grown from the app under it. Gaudí's rule: nothing exists in isolation.",
             "Rosso lacquer" to "Alfa red that keeps its contrast: oxblood over bright screens, a brighter rosso over dark ones. Ivory ink and a champagne light throughout.",
-            "Fuoco, Cascata, Onda" to "The three depth switches. Whatever you are leaving is not covered: it falls out of focus behind the arriving app (the system blurs the live screen), and comes back into focus as the new app settles. Everything arrives from the icon you touched. Fuoco is a focus pull: the app rises soft and oversized and sharpens as it contracts into the screen. Cascata is Gaudí's trencadís: the app's picture arrives as a mosaic, its tiles arcing out of the icon nearest first and closing their seams as they land. Onda wells up from the icon like water, a liquid edge relaxing into a circle. Cycle quickly, within 700ms of the last switch, and Concentrato makes each one quicker and shallower.",
+            "One landing" to "Every switch drawn by the bar lands on one deceleration and stops exactly on the app's own window, pixel for pixel, so the hand-over to the live app is a cut you cannot see. Nothing overshoots and comes back. What you leave recedes into the bar's dark ground as the new app comes forward.",
+            "Fuoco and Onda" to "The depth switches. Whatever you are leaving falls out of focus behind the arriving app and returns as it settles. Fuoco is a focus pull: the app rises soft from the icon and sharpens as it fills the screen. Onda opens as a circle from the icon, its rim a fine meniscus. Cycle within 700ms of the last switch and Concentrato makes each one quicker and shallower.",
+            "Lama" to "The Alfa light line as a switch. A blade of champagne light is drawn out of the icon along the bar, and the app is uncovered from it as the slit widens. Nothing flies and nothing scales: the app is already in place, and the light opens it.",
+            "Zoom, Reveal, Grow" to "Android's own motions, given distinct jobs. Zoom is a picture: the icon itself becomes the screen you left. Reveal never scales: the full-size app is uncovered by a window opening from a point. Grow is the live app scaling up out of the icon's square.",
             "The active-app pill" to "Adaptive. It reads the glass beneath it, zone by zone, and takes whichever tone stands out: light champagne with a soft glow and a dark ring over dark glass, deep bronze with a light ring over light glass. It is a little longer and thicker than before, and it still travels between apps as a liquid.",
             "Fanale" to "A ring of LED beads sweeps round the icon you touched and the app crosses the screen on a beaded edge of light, the Giulietta's rear lamp at night.",
             "Membrana" to "The app arrives as a membrane. Each edge is held at its corners and bows against its own speed, so every curve on screen is a measure of speed. As it lands the curves relax and it snaps taut, with a fine champagne meniscus.",

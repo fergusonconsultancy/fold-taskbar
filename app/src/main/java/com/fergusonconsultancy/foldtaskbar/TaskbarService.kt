@@ -93,6 +93,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 8
     }
 
+    /** Where each picture's window was on screen when it was taken, so a switch lands exactly on it. */
+    private val snapshotBounds = HashMap<String, Rect>()
+
     private var pendingOpen: String? = null
     private var pendingOpenAt = 0L
     private var dragFrom = IntArray(2)
@@ -750,7 +753,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** The app to picture for Zoom: alone on screen for a moment, not pictured recently. */
     private fun snapshotWanted(): String? {
-        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.POUR, Motion.FANALE, Motion.MEMBRANA, Motion.FUOCO, Motion.CASCATA, Motion.ONDA)) return null
+        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.FANALE, Motion.MEMBRANA, Motion.FUOCO, Motion.ONDA, Motion.LAMA)) return null
         val front = onScreen.singleOrNull()?.takeIf { it !in noRecents && it != packageName } ?: return null
         val now = SystemClock.uptimeMillis()
         if (now - frontSince < 900) return null
@@ -801,7 +804,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                             main.post {
                                 tones.forEach { (i, z) -> capsules.getOrNull(i)?.adaptTo(z) }
                                 tabTone?.let { (_, lum) -> tab?.setBackdropLight(lum > 0.5f) }
-                                picture?.let { (pkg, bmp) -> snapshots[pkg] = bmp; snapshotAt[pkg] = SystemClock.uptimeMillis() }
+                                picture?.let { (pkg, bmp) -> snapshots[pkg] = bmp; snapshotBounds.remove(pkg); snapshotAt[pkg] = SystemClock.uptimeMillis() }
                             }
                         }
                         hb.close()
@@ -825,6 +828,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val win = runCatching { windows }.getOrDefault(emptyList()).firstOrNull { w ->
             w.type == AccessibilityWindowInfo.TYPE_APPLICATION && runCatching { w.root?.packageName?.toString() }.getOrNull() == pkg
         } ?: return false
+        val bounds = Rect().also { win.getBoundsInScreen(it) }
         return runCatching {
             takeScreenshotOfWindow(win.id, mainExecutor, object : TakeScreenshotCallback {
                 override fun onSuccess(result: ScreenshotResult) {
@@ -840,7 +844,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                             if (small !== soft) soft.recycle()
                             // A private screen (banking, passwords) comes back black: never keep those
                             if (isBlank(small)) small.recycle()
-                            else main.post { snapshots[pkg] = small; snapshotAt[pkg] = SystemClock.uptimeMillis() }
+                            else main.post { snapshots[pkg] = small; snapshotBounds[pkg] = bounds; snapshotAt[pkg] = SystemClock.uptimeMillis() }
                         }
                         hb.close()
                     }
@@ -1096,7 +1100,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val motion = Prefs.motion(this)
         val look = motion.look
         if (look != null && source != null && source.isAttachedToWindow && isMainScreen()) {
-            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), look = look, concentrato = Prefs.concentrato(this)) }
+            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), look = look, concentrato = Prefs.concentrato(this), land = snapshotBounds[pkg]) }
                 .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }
         }
         closePanels()
