@@ -138,18 +138,34 @@ class Apps(private val context: Context) {
     private fun motionOptions(v: android.view.View, motion: Motion, snapshot: android.graphics.Bitmap?): ActivityOptions? {
         if (motion in refused) return null
         return when (motion) {
-            Motion.FANALE, Motion.MEMBRANA, Motion.FUOCO, Motion.CASCATA, Motion.ONDA, Motion.POUR -> ActivityOptions.makeCustomAnimation(context, R.anim.pour_enter, R.anim.pour_hold)
-            Motion.ZOOM -> if (snapshot != null) {
-                val tw = (v.width * 2.6f).toInt().coerceAtLeast(1)
-                val th = (tw * snapshot.height / snapshot.width.toFloat()).toInt().coerceAtLeast(1)
-                val thumb = rounded(android.graphics.Bitmap.createScaledBitmap(snapshot, tw, th, true), tw * 0.2f)
-                ActivityOptions.makeThumbnailScaleUpAnimation(v, thumb, v.width / 2 - tw / 2, v.height / 2 - th / 2)
-            } else ActivityOptions.makeClipRevealAnimation(v, 0, 0, v.width, v.height)
-            Motion.REVEAL -> ActivityOptions.makeClipRevealAnimation(v, 0, 0, v.width, v.height)
+            Motion.FANALE, Motion.MEMBRANA, Motion.FUOCO, Motion.ONDA, Motion.LAMA -> ActivityOptions.makeCustomAnimation(context, R.anim.pour_enter, R.anim.pour_hold)
+            // 24 Oct 2026: the three system motions, pulled apart so each is unmistakable.
+            // Zoom is a picture: it starts as exactly the icon (same size, same corners), so the
+            // icon itself becomes the screen you left. Without a picture it used to fall back to
+            // Reveal, which made the two identical; now it zooms the icon's own image instead.
+            Motion.ZOOM -> {
+                val tw = v.width.coerceAtLeast(1)
+                val src = snapshot ?: iconPicture(v)
+                if (src == null) ActivityOptions.makeScaleUpAnimation(v, 0, 0, v.width, v.height)
+                else {
+                    val th = if (snapshot != null) (tw * src.height / src.width.toFloat()).toInt().coerceAtLeast(1) else tw
+                    val thumb = rounded(android.graphics.Bitmap.createScaledBitmap(src, tw, th, true), tw * 0.24f)
+                    ActivityOptions.makeThumbnailScaleUpAnimation(v, thumb, 0, v.height / 2 - th / 2)
+                }
+            }
+            // Reveal: no scaling at all. The app is already full size; a window opens from a single point at the icon's centre
+            Motion.REVEAL -> ActivityOptions.makeClipRevealAnimation(v, v.width / 2, v.height / 2, 0, 0)
+            // Grow: the live app scales up out of the icon's square, content and all
             Motion.GROW -> ActivityOptions.makeScaleUpAnimation(v, 0, 0, v.width, v.height)
             Motion.SYSTEM -> null
         }
     }
+
+    /** The icon as it is drawn on the bar, for Zoom when there is no picture of the app yet. */
+    private fun iconPicture(v: android.view.View): android.graphics.Bitmap? = runCatching {
+        val b = android.graphics.Bitmap.createBitmap(v.width.coerceAtLeast(1), v.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+        v.draw(android.graphics.Canvas(b)); b
+    }.getOrNull()
 
     /** Opens the app beside whatever is already on screen. */
     fun openAdjacent(pkg: String): Boolean {

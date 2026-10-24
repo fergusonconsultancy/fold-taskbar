@@ -11,20 +11,19 @@ enum class Motion(val label: String) {
     // Drawn by the bar itself (see Pour.kt), in the order offered
     FANALE("Fanale: a tail-light ring lights round the icon and the app arrives on a beaded edge of light (drawn by the bar)"),
     MEMBRANA("Membrana: the app arrives as a membrane, its edges bowing against their own speed and snapping taut (drawn by the bar)"),
-    FUOCO("Fuoco: the app behind falls out of focus while the new one rises from its icon, soft and oversized, and sharpens into place (drawn by the bar)"),
-    CASCATA("Cascata: the app arrives as a mosaic, its tiles arcing out of the icon nearest first and closing their seams as they land (drawn by the bar)"),
-    ONDA("Onda: the app wells up from its icon like water, a liquid edge relaxing into a circle as the app behind falls out of focus (drawn by the bar)"),
-    POUR("Pour: the app swells out of its icon like syrup (drawn by the bar)"),
-    ZOOM("Zoom: the app's last screen grows out of its icon"),
-    REVEAL("Reveal: the app opens out from its icon"),
-    GROW("Grow: the app scales up from its icon"),
+    FUOCO("Fuoco: the app behind falls out of focus while the new one rises from its icon, soft, and sharpens as it fills the screen (drawn by the bar)"),
+    ONDA("Onda: the app wells up from its icon in a widening circle as the app behind falls out of focus (drawn by the bar)"),
+    LAMA("Lama: a blade of light is drawn out of the icon along the bar and the app is uncovered from it, the slit widening into the screen (drawn by the bar)"),
+    ZOOM("Zoom: a picture of where you left the app grows out of the icon itself and dissolves into the live app"),
+    REVEAL("Reveal: the app is already full size; a window opens from a point at the icon and uncovers it"),
+    GROW("Grow: the live app itself scales up out of the icon's square"),
     SYSTEM("System animation"),
     ;
 
     /** The motions the bar draws itself, and how. */
     val look: Look? get() = when (this) {
         FANALE -> Look.FANALE; MEMBRANA -> Look.MEMBRANA; FUOCO -> Look.FUOCO
-        CASCATA -> Look.CASCATA; ONDA -> Look.ONDA; POUR -> Look.POUR; else -> null
+        ONDA -> Look.ONDA; LAMA -> Look.LAMA; else -> null
     }
 }
 
@@ -125,7 +124,13 @@ object Prefs {
     fun setIconPack(c: Context, v: String?) = of(c).edit().putString(ICON_PACK, v ?: "").apply()
     const val ICON_PACK = "icon_pack"
 
-    fun motion(c: Context) = runCatching { Motion.valueOf(of(c).getString(MOTION, null)!!) }.getOrDefault(Motion.FANALE)
+    /** Pour and Cascata were retired on 24 Oct 2026: a saved Pour becomes Membrana, a saved Cascata becomes Lama. */
+    fun motion(c: Context): Motion = when (val s = of(c).getString(MOTION, null)) {
+        "POUR" -> Motion.MEMBRANA
+        "CASCATA" -> Motion.LAMA
+        null -> Motion.FANALE
+        else -> runCatching { Motion.valueOf(s) }.getOrDefault(Motion.FANALE)
+    }
     fun setMotion(c: Context, v: Motion) = of(c).edit().putString(MOTION, v.name).apply()
 
     /** Once (23 Oct 2026): Pour was the default before Fanale, so a saved Pour moves to Fanale. */
@@ -133,7 +138,7 @@ object Prefs {
         val p = of(c)
         if (p.getBoolean("fanale_offered", false)) return
         p.edit().putBoolean("fanale_offered", true).apply {
-            if (p.getString(MOTION, null) == Motion.POUR.name) putString(MOTION, Motion.FANALE.name)
+            if (p.getString(MOTION, null) == "POUR") putString(MOTION, Motion.FANALE.name)
         }.apply()
     }
 

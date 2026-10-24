@@ -63,7 +63,16 @@ import android.view.animation.PathInterpolator
  * relaxes into a perfect circle as it spreads, a fine meniscus on its rim, the content inside
  * settling as the water does.
  */
-enum class Look { POUR, FANALE, MEMBRANA, FUOCO, CASCATA, ONDA }
+/**
+ * 24 Oct 2026, second pass: Pour and Cascata are gone (Pour was Membrana without its reason;
+ * Cascata never stopped looking busy) and Lama replaces them. Every look now lands on the app's
+ * real window, pixel for pixel, so nothing jumps when the picture hands over to the live app.
+ *
+ * Lama: a single blade of champagne light is drawn out of the icon along the bar, and the app is
+ * uncovered from it, the slit widening into the whole screen. Nothing flies or scales: the app is
+ * already in place and the light simply opens it.
+ */
+enum class Look { FANALE, MEMBRANA, FUOCO, ONDA, LAMA }
 
 @SuppressLint("ViewConstructor")
 class Pour(context: Context, private val wm: WindowManager) : View(context) {
@@ -78,7 +87,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private var running: Animator? = null
     private var lamp = false
     private var membrane = false
-    private var look = Look.POUR
+    private var look = Look.MEMBRANA
     private var quick = false
     private var lastPlayAt = 0L
     private var concentrato = true
@@ -138,8 +147,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     /** Plays the pour from [source] (an icon on screen) over [screen]. */
-    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, lamp: Boolean = false, membrane: Boolean = false, look: Look? = null, concentrato: Boolean = true) {
-        this.look = look ?: when { lamp -> Look.FANALE; membrane -> Look.MEMBRANA; else -> Look.POUR }
+    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, lamp: Boolean = false, membrane: Boolean = false, look: Look? = null, concentrato: Boolean = true, land: Rect? = null) {
+        this.look = look ?: if (lamp) Look.FANALE else Look.MEMBRANA
         this.lamp = this.look == Look.FANALE
         this.membrane = this.look == Look.MEMBRANA
         this.concentrato = concentrato
@@ -156,15 +165,17 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         iconAt.set(from)
         // Start as a drop a touch smaller than the icon, so it visibly swells out of it
         from.inset(source.width * 0.08f, source.height * 0.08f)
-        to.set(0f, 0f, (if (width > 0) width else screen.width()).toFloat(), (if (height > 0) height else screen.height()).toFloat())
         picture = snapshot?.takeIf { !it.isRecycled }
+        // Land exactly where the app's window is, so the hand-over to the live app is invisible.
+        // A picture taken from the app's own window is that window's size; drawn over the whole
+        // screen it came out a few percent too large and jumped back as the app appeared.
+        if (land != null && picture != null && !land.isEmpty) to.set((land.left - mine[0]).toFloat(), (land.top - mine[1]).toFloat(), (land.right - mine[0]).toFloat(), (land.bottom - mine[1]).toFloat())
+        else to.set(0f, 0f, (if (width > 0) width else screen.width()).toFloat(), (if (height > 0) height else screen.height()).toFloat())
         // A private copy: the cached icon is shared with the bar and must not be resized here
         icon = appIcon?.constantState?.newDrawable(context.resources)?.mutate()
         body = icon?.let { tone(it) } ?: Color.DKGRAY
         // The splash: mostly the deep ground of the bar's family, with a quarter of the app's colour
         splash = blendColour(0xFF0E1311.toInt(), body, 0.28f)
-        // Cascata is a mosaic of the app's picture; without one, it rises as Fuoco instead
-        if (this.look == Look.CASCATA && picture == null) this.look = Look.FUOCO
         running?.cancel()
         animate().cancel()
         alpha = 1f
@@ -178,8 +189,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             val base = when (this@Pour.look) {
                 Look.FANALE -> LAMP_TRAVEL_MS
                 Look.FUOCO -> FUOCO_MS
-                Look.CASCATA -> CASCATA_MS
                 Look.ONDA -> ONDA_MS
+                Look.LAMA -> LAMA_MS
                 else -> TRAVEL_MS
             }
             duration = if (quick) (base * 0.68f).toLong() else base
@@ -210,7 +221,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         removeCallbacks(meltAnyway)
         if (visibility != VISIBLE) return
         val from = behind
-        animate().alpha(0f).setDuration(MELT_MS).setInterpolator(follow)
+        animate().alpha(0f).setDuration(MELT_MS).setInterpolator(null)
             // The background returns to focus as the picture melts into the live app
             .setUpdateListener { setBehindBlur(from * (1f - it.animatedFraction)) }
             .withEndAction { setBehindBlur(0f); setRenderEffect(null); visibility = INVISIBLE; picture = null; icon = null }
@@ -246,7 +257,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
     /** Per frame of the depth looks: how far out of focus the background is, and the picture's own focus pull. */
     private fun depthFrame() {
-        if (look != Look.FUOCO && look != Look.CASCATA && look != Look.ONDA) return
+        if (look != Look.FUOCO && look != Look.ONDA) return
         val deep = context.dp(if (quick) 14 else 30).toFloat()
         setBehindBlur(deep * smooth(t / 0.3f))
         if (look == Look.FUOCO && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
@@ -256,10 +267,13 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        // The veil: what you are leaving recedes into the bar's own dark ground. It also hides
+        // One UI shrinking the old app away behind the switch, which showed as grey margins
+        veil(canvas)
         when (look) {
             Look.FUOCO -> { drawFuoco(canvas); return }
-            Look.CASCATA -> { drawCascata(canvas); return }
             Look.ONDA -> { drawOnda(canvas); return }
+            Look.LAMA -> { drawLama(canvas); return }
             else -> Unit
         }
         val a = if (lamp) lampLead.getInterpolation(t) else lead.getInterpolation(t)
@@ -280,13 +294,12 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             else { r.right = mix(from.right, to.right, a); r.left = mix(from.left, to.left, c) }
             r.top = mix(from.top, to.top, b); r.bottom = mix(from.bottom, to.bottom, b)
         }
-        val radius = mix(from.width() * 0.32f, context.dp(26).toFloat(), b)
+        // Corners open out to the screen's own: square on landing, so nothing changes shape at the hand-over
+        val radius = mix(from.width() * 0.32f, context.dp(26).toFloat(), b) * (1f - smooth((t - 0.6f) / 0.4f))
         val leadSide = if (!across) (if (dy < 0) 'T' else 'B') else (if (dx < 0) 'L' else 'R')
 
         // Depth for every look: the app behind dips a little and the window casts a soft shadow
         // ahead of itself, both gone by the time it lands
-        val d = (if (quick) 0.08f else 0.16f) * smooth(t / 0.25f) * (1f - smooth((t - 0.55f) / 0.4f))
-        if (d > 0.004f) { dim.alpha = (255 * d).toInt(); canvas.drawRect(to, dim) }
         val sl = context.dp(36).toFloat() * (1f - smooth((t - 0.45f) / 0.4f))
         if (sl > 1f && !quick) aheadShadow(canvas, leadSide, sl)
 
@@ -333,6 +346,9 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             val want = (-v * 0.022f).coerceIn(-cap, cap)
             bow[k] += (want - bow[k]) * 0.3f
         }
+        // Taut by the time it lands: the bow is let go over the last stretch, never left mid-curve
+        val taut = 1f - smooth((t - 0.6f) / 0.35f)
+        for (k in 0..3) bow[k] *= taut
         last.set(r); lastT = t
         val rad = minOf(radius, r.width() / 2f, r.height() / 2f)
         val l = r.left; val tp = r.top; val rt = r.right; val b = r.bottom
@@ -382,20 +398,75 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     /** The background's dimming, deepest mid-switch: depth, not cover. */
-    private fun depthDim(canvas: Canvas) {
-        val d = (if (quick) 0.08f else 0.14f) * smooth(t / 0.3f)
-        if (d > 0.004f) { dim.alpha = (255 * d).toInt(); canvas.drawRect(to, dim) }
+    private fun depthDim(canvas: Canvas) = Unit
+
+    private val ground = Paint().apply { color = 0xFF0E1311.toInt() }
+
+    /** Rises within the first eighth of the switch and stays until the hand-over. */
+    private fun veil(canvas: Canvas) {
+        val v = (if (quick) 0.32f else 0.52f) * smooth(t / 0.12f)
+        if (v <= 0.004f) return
+        ground.alpha = (255 * v).toInt()
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), ground)
     }
 
-    /** Fuoco: rises soft and oversized from the icon, then contracts into the screen as it sharpens. */
+    private val blade = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bladeGlow = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /**
+     * Lama: the blade is drawn out of the icon along the bar's axis to the screen's edges, then
+     * the app is uncovered from it, the slit widening on one crisp deceleration. The two lips of
+     * the slit carry the light while they travel and lose it as they reach the edges.
+     */
+    private fun drawLama(canvas: Canvas) {
+        val dx = to.centerX() - iconAt.centerX(); val dy = to.centerY() - iconAt.centerY()
+        val across = kotlin.math.abs(dx) / to.width().coerceAtLeast(1f) > kotlin.math.abs(dy) / to.height().coerceAtLeast(1f)
+        // The blade: along the bar, through the icon
+        val draw = emph.getInterpolation((t / 0.32f).coerceAtMost(1f))
+        val open = emph.getInterpolation(((t - 0.16f) / 0.84f).coerceIn(0f, 1f))
+        val pos = if (!across) iconAt.centerY().coerceIn(to.top, to.bottom) else iconAt.centerX().coerceIn(to.left, to.right)
+        if (!across) {
+            r.set(to.left, mix(pos, to.top, open), to.right, mix(pos, to.bottom, open))
+        } else {
+            r.set(mix(pos, to.left, open), to.top, mix(pos, to.right, open), to.bottom)
+        }
+        if (open > 0f) {
+            canvas.save(); canvas.clipRect(r)
+            picture(canvas, to)
+            canvas.restore()
+        }
+        val light = 1f - smooth((open - 0.45f) / 0.45f)
+        if (light <= 0.01f) return
+        val thick = context.dp(1.5f).toFloat()
+        val glowW = context.dp(if (quick) 0 else 10).toFloat()
+        blade.color = Color.argb((235 * light).toInt(), 246, 228, 188)
+        bladeGlow.color = Color.argb((70 * light).toInt(), 217, 187, 134)
+        if (!across) {
+            val c = iconAt.centerX()
+            val l = mix(c, to.left, draw); val rt = mix(c, to.right, draw)
+            for (y in floatArrayOf(r.top, r.bottom)) {
+                if (glowW > 0f) canvas.drawRect(l, y - glowW / 2, rt, y + glowW / 2, bladeGlow)
+                canvas.drawRect(l, y - thick / 2, rt, y + thick / 2, blade)
+            }
+        } else {
+            val c = iconAt.centerY()
+            val tp = mix(c, to.top, draw); val bt = mix(c, to.bottom, draw)
+            for (x in floatArrayOf(r.left, r.right)) {
+                if (glowW > 0f) canvas.drawRect(x - glowW / 2, tp, x + glowW / 2, bt, bladeGlow)
+                canvas.drawRect(x - thick / 2, tp, x + thick / 2, bt, blade)
+            }
+        }
+    }
+
+    /**
+     * Fuoco: a focus pull. The app rises from the icon soft and sharpens as it fills the screen.
+     * 24 Oct 2026: it no longer rises oversized and contracts back; that return read as a bounce.
+     * It grows on one deceleration and stops exactly at the window's edges.
+     */
     private fun drawFuoco(canvas: Canvas) {
-        depthDim(canvas)
-        val g = follow.getInterpolation((t / 0.62f).coerceAtMost(1f))
-        val over = to.width() * 0.025f
-        val settle = smooth((t - 0.5f) / 0.5f)
-        val tl = mix(-over, 0f, settle); val tt = mix(-over * 0.86f, 0f, settle)
-        r.set(mix(from.left, to.left + tl, g), mix(from.top, to.top + tt, g), mix(from.right, to.right - tl, g), mix(from.bottom, to.bottom - tt, g))
-        val radius = mix(from.width() * 0.32f, context.dp(30).toFloat(), g)
+        val g = emph.getInterpolation((t / 0.8f).coerceAtMost(1f))
+        r.set(mix(from.left, to.left, g), mix(from.top, to.top, g), mix(from.right, to.right, g), mix(from.bottom, to.bottom, g))
+        val radius = mix(from.width() * 0.32f, 0f, g)
         path.reset(); path.addRoundRect(r, radius, radius, Path.Direction.CW)
         val a = smooth(t / 0.2f)
         canvas.save(); canvas.clipPath(path)
@@ -403,53 +474,6 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         picture(canvas, r)
         paint.alpha = 255
         canvas.restore()
-    }
-
-    /**
-     * Cascata, tightened (24 Oct 2026): the first version flew every tile out of the icon, which
-     * piled them up against the bar. Now each tile of the trencadís starts in its own place,
-     * drawn a short way back towards the icon, small and clear, and rises into position in a
-     * wave that spreads from the icon, nearest first. The mosaic is only ever seen in motion:
-     * landed tiles meet edge to edge, and once all are down it is one picture.
-     */
-    private fun drawCascata(canvas: Canvas) {
-        depthDim(canvas)
-        val cols = if (to.width() >= to.height()) 6 else 4
-        val rows = (cols * to.height() / to.width()).toInt().coerceAtLeast(3)
-        val tw = to.width() / cols; val th = to.height() / rows
-        val ox = iconAt.centerX(); val oy = iconAt.centerY()
-        val far = kotlin.math.hypot(to.width(), to.height())
-        val stagger = if (quick) 0.16f else 0.3f
-        val span = 1f - stagger
-        if (t >= 1f) { r.set(to); picture(canvas, r); return }
-        val rad = context.dp(8).toFloat()
-        for (row in 0 until rows) for (col in 0 until cols) {
-            val tx = to.left + col * tw; val ty = to.top + row * th
-            val cx = tx + tw / 2f; val cy = ty + th / 2f
-            val u = ((t - stagger * kotlin.math.hypot(cx - ox, cy - oy) / far) / span).coerceIn(0f, 1f)
-            if (u <= 0f) continue
-            r.set(tx, ty, tx + tw, ty + th)
-            if (u >= 1f) {
-                tile.set(tx - 0.75f, ty - 0.75f, tx + tw + 0.75f, ty + th + 0.75f)
-                picture(canvas, tile, r)
-                continue
-            }
-            val e = lift.getInterpolation(u)
-            // A short rise from towards the icon, growing from 86% as it comes
-            val back = (1f - e) * 0.16f
-            val px = cx + (ox - cx) * back; val py = cy + (oy - cy) * back
-            val sc = 0.86f + 0.14f * e
-            val corner = rad * (1f - e)
-            canvas.save()
-            canvas.translate(px, py); canvas.scale(sc, sc)
-            tile.set(-tw / 2f, -th / 2f, tw / 2f, th / 2f)
-            path.reset(); path.addRoundRect(tile, corner, corner, Path.Direction.CW)
-            canvas.clipPath(path)
-            paint.alpha = (255 * smooth(u / 0.35f)).toInt()
-            picture(canvas, tile, r)
-            paint.alpha = 255
-            canvas.restore()
-        }
     }
 
     /**
@@ -478,11 +502,9 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             path.close()
         }
         canvas.save(); canvas.clipPath(path)
-        val swell = 1f + 0.03f * (1f - g)
-        canvas.save(); canvas.scale(swell, swell, ox, oy)
+        // The content stays in place inside the ripple (no swell to settle back: that was a bounce)
         r.set(to)
         picture(canvas, r)
-        canvas.restore()
         canvas.restore()
         if (!quick) {
             sheen.strokeWidth = context.dp(1f).toFloat()
@@ -636,9 +658,10 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         // 24 Oct 2026: tighter throughout. A switch should feel immediate and then settle
         const val TRAVEL_MS = 400L
         const val LAMP_TRAVEL_MS = 480L
-        const val MELT_MS = 150L
+        /** The hand-over to the live app: with the picture landing on the app exactly, a near cut. */
+        const val MELT_MS = 90L
         const val FUOCO_MS = 440L
-        const val CASCATA_MS = 520L
+        const val LAMA_MS = 420L
         const val ONDA_MS = 440L
         /** Longest the picture waits for the real app before dissolving anyway. */
         const val ARRIVAL_WAIT_MS = 420L
