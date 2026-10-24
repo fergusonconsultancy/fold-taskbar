@@ -162,15 +162,17 @@ class Screen(private val ctx: Context, name: String, over: String) {
 
     private fun stretch() {
         val mid = root.scrollY + root.height / 2f
-        val k = ctx.px(5).toFloat()
-        val cap = ctx.px(16).toFloat()
+        // 24 Oct 2026: subtler, so it reads as give, never as wobble
+        val k = ctx.px(2.5f).toFloat()
+        val cap = ctx.px(7).toFloat()
         for (i in 0 until column.childCount) {
             val c = column.getChildAt(i)
             val d = kotlin.math.abs((c.top + c.height / 2f) - mid) / root.height.coerceAtLeast(1)
             c.translationY = (velocity * k * d * 2f).coerceIn(-cap, cap)
         }
         val speed = kotlin.math.abs(velocity)
-        val u = ((speed - 0.9f) / 1.8f).coerceIn(0f, 1f)
+        // Only a real fling empties the page; ordinary scrolling leaves every word in place
+        val u = ((speed - 1.8f) / 1.6f).coerceIn(0f, 1f)
         val a = 1f - u * u * (3f - 2f * u)
         secondaries.forEach { it.alpha = a }
     }
@@ -360,14 +362,15 @@ class Segmented(ctx: Context, private val options: List<String>, selected: Int, 
         labels[index].setTextColor(Kit.INK)
         index = i
         labels[i].setTextColor(Kit.GROUND)
-        val lead = android.view.animation.OvershootInterpolator(1.3f)
-        val trail = PathInterpolator(0.5f, 0f, 0.15f, 1f)
+        // One crisp curve; the trailing edge only a breath behind, so it reads as liquid, not loose
+        val lead = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+        val trail = PathInterpolator(0.3f, 0f, 0.1f, 1f)
         ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 420
+            duration = 320
             addUpdateListener {
                 val t = it.animatedFraction
-                val fast = lead.getInterpolation((t / 0.7f).coerceAtMost(1f))
-                val slow = trail.getInterpolation(((t - 0.1f) / 0.9f).coerceIn(0f, 1f))
+                val fast = lead.getInterpolation((t / 0.85f).coerceAtMost(1f))
+                val slow = trail.getInterpolation(((t - 0.06f) / 0.94f).coerceIn(0f, 1f))
                 thumbX = fromL + (toL - fromL) * (if (forward) slow else fast)
                 thumbR = fromR + (toR - fromR) * (if (forward) fast else slow)
                 invalidate()

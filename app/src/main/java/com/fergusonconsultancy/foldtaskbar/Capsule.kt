@@ -200,6 +200,18 @@ class Capsule(
 
     private var lightAlpha = 1f
 
+    /** Puts every icon back exactly at rest: after a drag, nothing is left leaning, faded or shrunk. */
+    fun settleAll() {
+        items().forEach { v ->
+            if (v.scaleX == 1f && v.alpha == 1f && v.translationX == 0f && v.translationY == 0f) return@forEach
+            v.animate().scaleX(1f).scaleY(1f).alpha(1f).translationX(0f).translationY(0f).setDuration(200).setInterpolator(Curves.OPEN).start()
+        }
+        dividers.forEach { it.alpha = 1f }
+        lightAlpha = 1f
+        scaleX = 1f; scaleY = 1f
+        invalidate()
+    }
+
     /** Whether a point on screen is on one of the capsule's handles: the grid button or the grip. */
     fun isHandle(x: Float, y: Float): Boolean = listOfNotNull(grid, grip).any { g ->
         val loc = IntArray(2).also { g.getLocationOnScreen(it) }

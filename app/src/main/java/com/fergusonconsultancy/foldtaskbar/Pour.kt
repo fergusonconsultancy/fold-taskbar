@@ -112,8 +112,10 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private val sheen = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val src = Rect()
 
-    private val lead = OvershootInterpolator(1.15f)
-    private val lift = OvershootInterpolator(1.25f)
+    // 24 Oct 2026, tightened: every look lands on one crisp deceleration, no overshoot past the screen
+    private val emph = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+    private val lead = emph
+    private val lift = PathInterpolator(0.2f, 0f, 0f, 1f)
     private val follow = PathInterpolator(0.3f, 0f, 0f, 1f)
     private val trail = PathInterpolator(0.55f, 0f, 0.15f, 1f)
     // Fanale: the lit edge crosses the screen on a steadier curve, so the light is seen travelling
@@ -159,8 +161,12 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         icon = appIcon?.constantState?.newDrawable(context.resources)?.mutate()
         body = icon?.let { tone(it) } ?: Color.DKGRAY
         running?.cancel()
+        animate().cancel()
         alpha = 1f
         t = 0f
+        travelled = false
+        appHere = false
+        removeCallbacks(meltAnyway)
         visibility = VISIBLE
         invalidate()
         running = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -175,13 +181,29 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             interpolator = null
             addUpdateListener { t = it.animatedFraction; depthFrame(); invalidate() }
             addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: Animator) = melt()
+                override fun onAnimationEnd(animation: Animator) { travelled = true; meltWhenReady() }
             })
             start()
         }
     }
 
+    // The picture dissolves only once the real app is on screen, so the two are never seen at once
+    private var travelled = false
+    private var appHere = false
+    private val meltAnyway = Runnable { melt() }
+
+    /** The app has come forward (the service saw it): the picture may dissolve into it. */
+    fun arrived() { appHere = true; if (travelled) meltWhenReady() }
+
+    private fun meltWhenReady() {
+        if (visibility != VISIBLE || !travelled) return
+        removeCallbacks(meltAnyway)
+        if (appHere) melt() else postDelayed(meltAnyway, ARRIVAL_WAIT_MS)
+    }
+
     private fun melt() {
+        removeCallbacks(meltAnyway)
+        if (visibility != VISIBLE) return
         val from = behind
         animate().alpha(0f).setDuration(MELT_MS).setInterpolator(follow)
             // The background returns to focus as the picture melts into the live app
@@ -191,6 +213,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     fun cancel() {
+        removeCallbacks(meltAnyway)
         running?.cancel()
         animate().cancel()
         setBehindBlur(0f)
@@ -219,10 +242,10 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     /** Per frame of the depth looks: how far out of focus the background is, and the picture's own focus pull. */
     private fun depthFrame() {
         if (look != Look.FUOCO && look != Look.CASCATA && look != Look.ONDA) return
-        val deep = context.dp(if (quick) 18 else 42).toFloat()
-        setBehindBlur(deep * smooth(t / 0.35f))
+        val deep = context.dp(if (quick) 14 else 30).toFloat()
+        setBehindBlur(deep * smooth(t / 0.3f))
         if (look == Look.FUOCO && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            val r = context.dp(if (quick) 12 else 26).toFloat() * (1f - smooth((t - 0.08f) / 0.66f))
+            val r = context.dp(if (quick) 8 else 16).toFloat() * (1f - smooth((t - 0.05f) / 0.5f))
             setRenderEffect(if (r < 0.5f) null else android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.CLAMP))
         }
     }
@@ -235,8 +258,10 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             else -> Unit
         }
         val a = if (lamp) lampLead.getInterpolation(t) else lead.getInterpolation(t)
-        val b = follow.getInterpolation(((t - 0.06f) / 0.94f).coerceIn(0f, 1f))
-        val c = trail.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
+        // The far edge leads by a breath, the sides follow, the near edge lets go last: just
+        // enough stagger to read direction, never enough to look like a stretched rectangle
+        val b = emph.getInterpolation(((t - 0.03f) / 0.97f).coerceIn(0f, 1f))
+        val c = emph.getInterpolation(((t - 0.08f) / 0.92f).coerceIn(0f, 1f))
         // The far edge leads, the sides follow, the near edge lets go last. A bar lying at
         // the top or bottom pours vertically; a bar standing at a side pours across.
         val dx = to.centerX() - from.centerX(); val dy = to.centerY() - from.centerY()
@@ -250,16 +275,15 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             else { r.right = mix(from.right, to.right, a); r.left = mix(from.left, to.left, c) }
             r.top = mix(from.top, to.top, b); r.bottom = mix(from.bottom, to.bottom, b)
         }
-        val radius = mix(from.width() * 0.32f, context.dp(30).toFloat(), b)
+        val radius = mix(from.width() * 0.32f, context.dp(26).toFloat(), b)
         val leadSide = if (!across) (if (dy < 0) 'T' else 'B') else (if (dx < 0) 'L' else 'R')
 
-        // Fanale: the app behind dips and the window casts its shadow ahead of itself
-        if (lamp) {
-            val d = 0.3f * smooth(t / 0.3f) * (1f - smooth((t - 0.66f) / 0.34f))
-            if (d > 0.004f) { dim.alpha = (255 * d).toInt(); canvas.drawRect(to, dim) }
-            val sl = context.dp(56).toFloat() * (1f - smooth((t - 0.6f) / 0.4f))
-            if (sl > 1f) aheadShadow(canvas, leadSide, sl)
-        }
+        // Depth for every look: the app behind dips a little and the window casts a soft shadow
+        // ahead of itself, both gone by the time it lands
+        val d = (if (quick) 0.08f else 0.16f) * smooth(t / 0.25f) * (1f - smooth((t - 0.55f) / 0.4f))
+        if (d > 0.004f) { dim.alpha = (255 * d).toInt(); canvas.drawRect(to, dim) }
+        val sl = context.dp(36).toFloat() * (1f - smooth((t - 0.45f) / 0.4f))
+        if (sl > 1f && !quick) aheadShadow(canvas, leadSide, sl)
 
         path.reset()
         if (membrane) membranePath(radius) else path.addRoundRect(r, radius, radius, Path.Direction.CW)
@@ -277,8 +301,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             fill.color = body
             canvas.drawRect(r, fill)
         }
-        // The icon rides in the middle and dissolves as the window opens
-        icon?.let { d ->
+        // Without a picture, the icon rides in the middle of its own colour, like a splash screen
+        if (picture == null) icon?.let { d ->
             val k = (1f - b * 1.6f).coerceIn(0f, 1f)
             if (k > 0f) {
                 val s = from.width() * (1f + b * 0.6f)
@@ -291,11 +315,13 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         }
         canvas.restore()
         // A thin line of light along the rim, like the meniscus of a liquid, fading as it lands
-        sheen.strokeWidth = context.dp(1.5f).toFloat()
-        // Membrana's meniscus is champagne, brightest while the membrane is still moving
-        sheen.color = if (membrane) Color.argb((150 * (1f - c * 0.8f)).toInt().coerceIn(0, 255), 236, 214, 170)
-            else Color.argb(((if (lamp) 40 else 90) * (1f - c)).toInt().coerceIn(0, 255), 255, 255, 255)
-        canvas.drawPath(path, sheen)
+        // One hairline of light on the rim while it travels, gone before it lands. Membrana's is
+        // champagne, the meniscus of the membrane
+        sheen.strokeWidth = context.dp(1f).toFloat()
+        val rimA = 1f - smooth((t - 0.2f) / 0.45f)
+        sheen.color = if (membrane) Color.argb((110 * rimA).toInt().coerceIn(0, 255), 236, 214, 170)
+            else Color.argb((if (lamp) 0 else (48 * rimA).toInt()).coerceIn(0, 255), 255, 255, 255)
+        if (Color.alpha(sheen.color) > 2) canvas.drawPath(path, sheen)
         if (lamp) { drawEdge(canvas, leadSide); drawRing(canvas) }
     }
 
@@ -307,13 +333,13 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private fun membranePath(radius: Float) {
         val dt = if (lastT < 0f) 0f else (t - lastT)
         val sp = floatArrayOf(r.left - last.left, r.top - last.top, r.right - last.right, r.bottom - last.bottom)
-        val cap = minOf(r.width(), r.height()) * 0.12f
+        val cap = minOf(r.width(), r.height()) * 0.06f
         for (k in 0..3) {
             // Pixels per unit of the animation's time; the middle of the edge lags the corners,
             // so the bow points against the motion
             val v = if (dt > 0f) sp[k] / dt else 0f
-            val want = (-v * 0.035f).coerceIn(-cap, cap)
-            bow[k] += (want - bow[k]) * 0.45f
+            val want = (-v * 0.022f).coerceIn(-cap, cap)
+            bow[k] += (want - bow[k]) * 0.3f
         }
         last.set(r); lastT = t
         val rad = minOf(radius, r.width() / 2f, r.height() / 2f)
@@ -348,7 +374,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
     /** The background's dimming, deepest mid-switch: depth, not cover. */
     private fun depthDim(canvas: Canvas) {
-        val d = (if (quick) 0.14f else 0.24f) * smooth(t / 0.3f)
+        val d = (if (quick) 0.08f else 0.14f) * smooth(t / 0.3f)
         if (d > 0.004f) { dim.alpha = (255 * d).toInt(); canvas.drawRect(to, dim) }
     }
 
@@ -356,13 +382,13 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private fun drawFuoco(canvas: Canvas) {
         depthDim(canvas)
         val g = follow.getInterpolation((t / 0.62f).coerceAtMost(1f))
-        val over = to.width() * 0.045f
+        val over = to.width() * 0.025f
         val settle = smooth((t - 0.5f) / 0.5f)
         val tl = mix(-over, 0f, settle); val tt = mix(-over * 0.86f, 0f, settle)
         r.set(mix(from.left, to.left + tl, g), mix(from.top, to.top + tt, g), mix(from.right, to.right - tl, g), mix(from.bottom, to.bottom - tt, g))
         val radius = mix(from.width() * 0.32f, context.dp(30).toFloat(), g)
         path.reset(); path.addRoundRect(r, radius, radius, Path.Direction.CW)
-        val a = smooth(t / 0.28f)
+        val a = smooth(t / 0.2f)
         canvas.save(); canvas.clipPath(path)
         paint.alpha = (255 * a).toInt()
         picture(canvas, r)
@@ -370,7 +396,13 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         canvas.restore()
     }
 
-    /** Cascata: a trencadís of the picture, its tiles arcing out of the icon nearest first. */
+    /**
+     * Cascata, tightened (24 Oct 2026): the first version flew every tile out of the icon, which
+     * piled them up against the bar. Now each tile of the trencadís starts in its own place,
+     * drawn a short way back towards the icon, small and clear, and rises into position in a
+     * wave that spreads from the icon, nearest first. The mosaic is only ever seen in motion:
+     * landed tiles meet edge to edge, and once all are down it is one picture.
+     */
     private fun drawCascata(canvas: Canvas) {
         depthDim(canvas)
         val cols = if (to.width() >= to.height()) 6 else 4
@@ -378,82 +410,76 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         val tw = to.width() / cols; val th = to.height() / rows
         val ox = iconAt.centerX(); val oy = iconAt.centerY()
         val far = kotlin.math.hypot(to.width(), to.height())
-        val stagger = if (quick) 0.18f else 0.34f
-        val span = 1f - stagger - 0.06f
-        val gap = context.dp(3).toFloat()
-        // Every tile down: the mosaic is one picture again, with no seams left to show
-        if (t >= stagger + span) { r.set(to); picture(canvas, r); return }
+        val stagger = if (quick) 0.16f else 0.3f
+        val span = 1f - stagger
+        if (t >= 1f) { r.set(to); picture(canvas, r); return }
+        val rad = context.dp(8).toFloat()
         for (row in 0 until rows) for (col in 0 until cols) {
             val tx = to.left + col * tw; val ty = to.top + row * th
             val cx = tx + tw / 2f; val cy = ty + th / 2f
-            val dist = kotlin.math.hypot(cx - ox, cy - oy)
-            val u = ((t - stagger * dist / far) / span).coerceIn(0f, 1f)
+            val u = ((t - stagger * kotlin.math.hypot(cx - ox, cy - oy) / far) / span).coerceIn(0f, 1f)
             if (u <= 0f) continue
-            val e = lift.getInterpolation(u)
-            // An arc, not a line: the control point sits off the straight path, alternating side
-            val side = if ((row + col) % 2 == 0) 1f else -1f
-            val mx2 = (ox + cx) / 2f - (cy - oy) * 0.16f * side
-            val my2 = (oy + cy) / 2f + (cx - ox) * 0.16f * side
-            val k = e.coerceAtMost(1f)
-            val px = (1 - k) * (1 - k) * ox + 2 * (1 - k) * k * mx2 + k * k * cx + (e - k) * (cx - ox) * 0.2f
-            val py = (1 - k) * (1 - k) * oy + 2 * (1 - k) * k * my2 + k * k * cy + (e - k) * (cy - oy) * 0.2f
-            val sc = mix(iconAt.width() / tw, 1f, e)
-            val seam = gap * (1f - smooth((u - 0.45f) / 0.35f))
-            val rad = context.dp(14).toFloat() * (1f - smooth((u - 0.5f) / 0.35f))
+            r.set(tx, ty, tx + tw, ty + th)
             if (u >= 1f) {
-                // Landed: drawn edge to edge, a hair oversize, so neighbours meet without a seam
-                r.set(tx, ty, tx + tw, ty + th)
                 tile.set(tx - 0.75f, ty - 0.75f, tx + tw + 0.75f, ty + th + 0.75f)
                 picture(canvas, tile, r)
                 continue
             }
+            val e = lift.getInterpolation(u)
+            // A short rise from towards the icon, growing from 86% as it comes
+            val back = (1f - e) * 0.16f
+            val px = cx + (ox - cx) * back; val py = cy + (oy - cy) * back
+            val sc = 0.86f + 0.14f * e
+            val corner = rad * (1f - e)
             canvas.save()
-            canvas.translate(px, py)
-            canvas.rotate(10f * side * (1f - k))
-            canvas.scale(sc, sc)
-            tile.set(-tw / 2f + seam, -th / 2f + seam, tw / 2f - seam, th / 2f - seam)
-            path.reset(); path.addRoundRect(tile, rad, rad, Path.Direction.CW)
-            canvas.clipPath(path)
-            paint.alpha = (255 * smooth(u / 0.22f)).toInt()
-            r.set(tx, ty, tx + tw, ty + th)
+            canvas.translate(px, py); canvas.scale(sc, sc)
             tile.set(-tw / 2f, -th / 2f, tw / 2f, th / 2f)
+            path.reset(); path.addRoundRect(tile, corner, corner, Path.Direction.CW)
+            canvas.clipPath(path)
+            paint.alpha = (255 * smooth(u / 0.35f)).toInt()
             picture(canvas, tile, r)
             paint.alpha = 255
             canvas.restore()
         }
     }
 
-    /** Onda: wells up from the icon, a liquid edge relaxing into a circle as it spreads. */
+    /**
+     * Onda, tightened (24 Oct 2026): a clean circle rising from the icon, its edge only faintly
+     * liquid at the very start and true almost at once, the content inside settling from a
+     * slight swell. A hairline meniscus fades as it spreads.
+     */
     private fun drawOnda(canvas: Canvas) {
         depthDim(canvas)
         val ox = iconAt.centerX(); val oy = iconAt.centerY()
         val reach = maxOf(kotlin.math.hypot(ox - to.left, oy - to.top), kotlin.math.hypot(ox - to.right, oy - to.top),
             kotlin.math.hypot(ox - to.left, oy - to.bottom), kotlin.math.hypot(ox - to.right, oy - to.bottom))
-        val g = follow.getInterpolation((t / 0.85f).coerceAtMost(1f))
-        val rad = mix(iconAt.width() * 0.45f, reach * 1.02f, g)
-        // The edge is liquid at first and relaxes into a circle: amplitude dies away as it spreads
-        val amp = 0.07f * (1f - g) * (1f - g)
-        val phase = t * 7f
+        val g = emph.getInterpolation((t / 0.9f).coerceAtMost(1f))
+        val rad = mix(iconAt.width() * 0.5f, reach * 1.01f, g)
+        val amp = 0.022f * (1f - smooth(g / 0.35f))
         path.reset()
-        val n = 72
-        for (i in 0..n) {
-            val th = (2 * Math.PI * i / n).toFloat()
-            val rr = rad * (1f + amp * kotlin.math.sin(5f * th + phase) + amp * 0.5f * kotlin.math.sin(3f * th - phase * 1.3f))
-            val x = ox + rr * kotlin.math.cos(th); val y = oy + rr * kotlin.math.sin(th)
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        if (amp <= 0.0005f) path.addCircle(ox, oy, rad, Path.Direction.CW)
+        else {
+            val n = 64
+            for (i in 0..n) {
+                val th = (2 * Math.PI * i / n).toFloat()
+                val rr = rad * (1f + amp * kotlin.math.sin(4f * th + t * 6f))
+                val x = ox + rr * kotlin.math.cos(th); val y = oy + rr * kotlin.math.sin(th)
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.close()
         }
-        path.close()
         canvas.save(); canvas.clipPath(path)
-        // The content settles as the water does: from a slight swell to rest, about the spring
-        val swell = 1f + 0.07f * (1f - g)
+        val swell = 1f + 0.03f * (1f - g)
         canvas.save(); canvas.scale(swell, swell, ox, oy)
         r.set(to)
         picture(canvas, r)
         canvas.restore()
         canvas.restore()
-        sheen.strokeWidth = context.dp(1.5f).toFloat()
-        sheen.color = Color.argb((160 * (1f - g)).toInt().coerceIn(0, 255), 236, 214, 170)
-        if (!quick) canvas.drawPath(path, sheen)
+        if (!quick) {
+            sheen.strokeWidth = context.dp(1f).toFloat()
+            sheen.color = Color.argb((110 * (1f - smooth(g / 0.7f))).toInt().coerceIn(0, 255), 236, 214, 170)
+            if (Color.alpha(sheen.color) > 2) canvas.drawPath(path, sheen)
+        }
     }
 
     private fun smooth(x: Float): Float { val c = x.coerceIn(0f, 1f); return c * c * (3f - 2f * c) }
@@ -468,7 +494,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
     private fun bead(canvas: Canvas, x: Float, y: Float, rCore: Float, level: Float) {
         if (level <= 0.01f) return
-        val rg = rCore * 5f
+        val rg = rCore * 4.2f
         mx.setScale(rg, rg); mx.postTranslate(x, y)
         glowShader.setLocalMatrix(mx)
         glow.alpha = (255 * (0.5f * level).coerceAtMost(1f)).toInt()
@@ -498,13 +524,14 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         val a1 = if (vertical) r.bottom else r.right
         val len = a1 - a0
         if (len < context.dp(8)) return
-        val pitch = context.dp(12).toFloat()
+        val pitch = context.dp(15).toFloat()
         val n = (len / pitch).toInt().coerceAtLeast(1)
         val anchor = (if (vertical) iconAt.centerY() else iconAt.centerX()).coerceIn(a0, a1)
         val reach = maxOf(anchor - a0, a1 - anchor).coerceAtLeast(1f)
         val inset = context.dp(3).toFloat() * (if (side == 'L' || side == 'T') 1 else -1)
+        // The housing is gone (24 Oct 2026): it read as a smear. The beads alone carry the lamp
         val hw = context.dp(22).toFloat()
-        val ha = smooth(t / 0.08f) * (1f - smooth((t - 0.8f) / 0.15f))
+        val ha = 0f
         if (ha > 0.01f) {
             housing.alpha = (255 * ha).toInt()
             mx.reset()
@@ -522,13 +549,14 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
                 else -> canvas.drawRect(r.left, r.bottom - hw, r.right, r.bottom, housing)
             }
         }
-        val rc = context.dp(2.4f).toFloat()
+        val rc = context.dp(1.9f).toFloat()
         for (k in 0..n) {
             val along = a0 + len * k / n
             val d = kotlin.math.abs(along - anchor) / reach
-            val fall = 1f - 0.62f * Math.pow(d.toDouble(), 1.5).toFloat()
-            val off = 1f - smooth((t - (0.72f + 0.2f * d)) / 0.07f)
-            val level = ignite(0.06f + 0.3f * d) * fall * off
+            // A short bar of light, not the whole edge: it falls away well before the corners
+            val fall = (1f - d * 1.35f).coerceIn(0f, 1f).let { it * it * (3f - 2f * it) }
+            val off = 1f - smooth((t - (0.58f + 0.18f * d)) / 0.08f)
+            val level = ignite(0.04f + 0.24f * d) * fall * off
             if (vertical) bead(canvas, pos + inset, along, rc * (0.7f + 0.3f * fall), level)
             else bead(canvas, along, pos + inset, rc * (0.7f + 0.3f * fall), level)
         }
@@ -536,17 +564,17 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
     /** The ring of beads round the icon: it sweeps round from the side facing the screen, then dims as the app leaves it. */
     private fun drawRing(canvas: Canvas) {
-        val fade = 1f - smooth((t - 0.28f) / 0.3f)
-        if (fade <= 0f) return
+        val fade = 1f - smooth((t - 0.22f) / 0.22f)
+        if (fade <= 0f || quick) return
         val cx = iconAt.centerX(); val cy = iconAt.centerY()
-        val rad = iconAt.width() * 0.6f
+        val rad = iconAt.width() * 0.62f
         val start = kotlin.math.atan2((to.centerY() - cy).toDouble(), (to.centerX() - cx).toDouble())
-        val m = 18
+        val m = 14
         for (j in 0 until m) {
             val ang = start + 2 * Math.PI * j / m
             val x = cx + (rad * kotlin.math.cos(ang)).toFloat()
             val y = cy + (rad * kotlin.math.sin(ang)).toFloat()
-            bead(canvas, x, y, context.dp(2.1f).toFloat(), ignite(0.16f * j / m) * fade)
+            bead(canvas, x, y, context.dp(1.6f).toFloat(), ignite(0.12f * j / m) * fade)
         }
     }
 
@@ -591,11 +619,14 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     companion object {
-        const val TRAVEL_MS = 460L
-        const val LAMP_TRAVEL_MS = 620L
-        const val MELT_MS = 240L
-        const val FUOCO_MS = 560L
-        const val CASCATA_MS = 640L
-        const val ONDA_MS = 560L
+        // 24 Oct 2026: tighter throughout. A switch should feel immediate and then settle
+        const val TRAVEL_MS = 400L
+        const val LAMP_TRAVEL_MS = 480L
+        const val MELT_MS = 150L
+        const val FUOCO_MS = 440L
+        const val CASCATA_MS = 520L
+        const val ONDA_MS = 440L
+        /** Longest the picture waits for the real app before dissolving anyway. */
+        const val ARRIVAL_WAIT_MS = 420L
     }
 }
