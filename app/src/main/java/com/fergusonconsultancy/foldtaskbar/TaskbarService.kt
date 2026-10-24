@@ -753,7 +753,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** The app to picture for Zoom: alone on screen for a moment, not pictured recently. */
     private fun snapshotWanted(): String? {
-        if (Prefs.motion(this) !in setOf(Motion.ZOOM, Motion.FANALE, Motion.MEMBRANA, Motion.FUOCO, Motion.ONDA, Motion.LAMA)) return null
+        if (Prefs.motion(this).look == null) return null
         val front = onScreen.singleOrNull()?.takeIf { it !in noRecents && it != packageName } ?: return null
         val now = SystemClock.uptimeMillis()
         if (now - frontSince < 900) return null
@@ -996,10 +996,25 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (front !in Prefs.pinned(this)) Prefs.trayAdd(this, front, Prefs.recentCount(this), eligible)
     }
 
+    /**
+     * The picture hands over only once the app has really drawn its screen: a window with
+     * content, not the splash a cold start shows first. Checked each frame, for up to 700ms.
+     */
+    private fun handOverWhenDrawn(pkg: String, since: Long) {
+        val ready = runCatching { windows }.getOrDefault(emptyList()).any { w ->
+            w.type == AccessibilityWindowInfo.TYPE_APPLICATION && runCatching {
+                val root = w.root
+                root?.packageName?.toString() == pkg && root.childCount > 0
+            }.getOrDefault(false)
+        }
+        if (ready || SystemClock.uptimeMillis() - since > 700) { pour.arrived(); return }
+        main.postDelayed({ handOverWhenDrawn(pkg, since) }, 16)
+    }
+
     private fun reportOpenTime() {
         val p = pendingOpen ?: return
         if (onScreen.firstOrNull() == p) {
-            if (::pour.isInitialized) pour.arrived()
+            if (::pour.isInitialized) handOverWhenDrawn(p, SystemClock.uptimeMillis())
             val ms = SystemClock.uptimeMillis() - pendingOpenAt
             EventLog.add(this, "Opened ${apps.entry(p)?.label ?: p} in ${ms}ms")
             pendingOpen = null
@@ -1094,15 +1109,15 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (onScreen.size == 1 && onScreen.first() == pkg) { closePanels(); return }
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
-        // Launch first, on this frame; the motion is the app's own window moving
         val pic = snapshots[pkg]
-        apps.open(pkg, source, pic)
         val motion = Prefs.motion(this)
         val look = motion.look
-        if (look != null && source != null && source.isAttachedToWindow && isMainScreen()) {
+        // The bar's motion goes up first, on this frame, so the quietly launched app appears
+        // underneath it and is never seen arriving on its own
+        val drawn = look != null && source != null && source.isAttachedToWindow && isMainScreen() &&
             runCatching { pour.play(source, screen(), pic, apps.icon(pkg), look = look, concentrato = Prefs.concentrato(this), land = snapshotBounds[pkg]) }
-                .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }
-        }
+                .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }.isSuccess
+        if (drawn) apps.openQuiet(pkg) else apps.open(pkg, source, pic)
         closePanels()
         if (Prefs.autoHide(this) && revealed) {
             main.removeCallbacks(autoHideNow)
@@ -1156,8 +1171,32 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     override fun onAllApps(view: View) {
         closeMenu()
         pairingFirst = null
-        if (drawer.isOpen) drawer.close() else drawer.open(view as? GlyphView)
+        if (drawer.isOpen) drawer.close() else { readDrawerBackdrop(); drawer.open(view as? GlyphView) }
         onBarTouched()
+    }
+
+    /** Reads the screen the grid is about to open over, so its glass can take that colour. */
+    private fun readDrawerBackdrop() {
+        if (!Prefs.finish(this).adaptive) return
+        runCatching {
+            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(result: ScreenshotResult) {
+                    val hb = result.hardwareBuffer
+                    bg.post {
+                        runCatching {
+                            val full = Bitmap.wrapHardwareBuffer(hb, result.colorSpace) ?: return@runCatching
+                            val soft = full.copy(Bitmap.Config.ARGB_8888, false)
+                            full.recycle()
+                            val tone = averageIn(soft, Rect(0, 0, soft.width, soft.height), Rect(), dp(12).coerceAtLeast(1))
+                            soft.recycle()
+                            if (tone != null) main.post { drawer.setBackdrop(tone.first, tone.second) }
+                        }
+                        hb.close()
+                    }
+                }
+                override fun onFailure(errorCode: Int) = Unit
+            })
+        }
     }
 
     /**
