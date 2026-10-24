@@ -560,7 +560,7 @@ class Slider(
                 }
             }
             val stepped = (nv * 20).toInt() / 20f
-            if (stepped != value) { value = stepped.coerceIn(min, max); readout.text = format(value); v.invalidate() }
+            if (stepped != this.value) { this.value = stepped.coerceIn(min, max); readout.text = format(this.value); v.invalidate() }
             true
         }
     }
