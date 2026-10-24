@@ -8,13 +8,24 @@ import android.content.SharedPreferences
  * reserved for the system (Depth asked for it, and One UI refused).
  */
 enum class Motion(val label: String) {
+    // Drawn by the bar itself (see Pour.kt), in the order offered
     FANALE("Fanale: a tail-light ring lights round the icon and the app arrives on a beaded edge of light (drawn by the bar)"),
     MEMBRANA("Membrana: the app arrives as a membrane, its edges bowing against their own speed and snapping taut (drawn by the bar)"),
+    FUOCO("Fuoco: the app behind falls out of focus while the new one rises from its icon, soft and oversized, and sharpens into place (drawn by the bar)"),
+    CASCATA("Cascata: the app arrives as a mosaic, its tiles arcing out of the icon nearest first and closing their seams as they land (drawn by the bar)"),
+    ONDA("Onda: the app wells up from its icon like water, a liquid edge relaxing into a circle as the app behind falls out of focus (drawn by the bar)"),
     POUR("Pour: the app swells out of its icon like syrup (drawn by the bar)"),
     ZOOM("Zoom: the app's last screen grows out of its icon"),
     REVEAL("Reveal: the app opens out from its icon"),
     GROW("Grow: the app scales up from its icon"),
     SYSTEM("System animation"),
+    ;
+
+    /** The motions the bar draws itself, and how. */
+    val look: Look? get() = when (this) {
+        FANALE -> Look.FANALE; MEMBRANA -> Look.MEMBRANA; FUOCO -> Look.FUOCO
+        CASCATA -> Look.CASCATA; ONDA -> Look.ONDA; POUR -> Look.POUR; else -> null
+    }
 }
 
 enum class Shape(val label: String) { PAIR("Hinge pair"), CAPSULE("Capsule") }
