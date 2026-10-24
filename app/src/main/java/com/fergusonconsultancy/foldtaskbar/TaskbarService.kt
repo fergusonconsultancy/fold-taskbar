@@ -771,7 +771,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             else i to Rect(lp.x + pad, lp.y + pad, lp.x + h.width - pad, lp.y + h.height - pad)
         } else emptyList()
         val tabR = Prefs.collapsed(this)?.takeIf { tab != null }?.let { tabRect(it.first, it.second) }
-        val snapPkg = snapshotWanted()
+        val wanted = snapshotWanted()
+        // 24 Oct 2026: a full-screen shot pictures the bar too, wherever it was at the time, so
+        // a switch could show the bar in an old place inside the arriving app. On Android 14 and
+        // later the app is pictured on its own, from its window alone, with nothing of ours in it.
+        if (wanted != null && android.os.Build.VERSION.SDK_INT >= 34 && pictureWindow(wanted)) return
+        val snapPkg = if (android.os.Build.VERSION.SDK_INT >= 34) null else wanted
         val ring = dp(28)
         val step = dp(4).coerceAtLeast(1)
 
@@ -812,6 +817,38 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             if (!loggedShotFailure) EventLog.add(this, "Screen reading unavailable (${it.javaClass.simpleName}): turn Fold Taskbar off and on in Accessibility to grant it")
             loggedShotFailure = true
         }
+    }
+
+    /** Pictures [pkg] from its own window (Android 14 and later), so nothing of the bar is in it. */
+    private fun pictureWindow(pkg: String): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 34) return false
+        val win = runCatching { windows }.getOrDefault(emptyList()).firstOrNull { w ->
+            w.type == AccessibilityWindowInfo.TYPE_APPLICATION && runCatching { w.root?.packageName?.toString() }.getOrNull() == pkg
+        } ?: return false
+        return runCatching {
+            takeScreenshotOfWindow(win.id, mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(result: ScreenshotResult) {
+                    val hb = result.hardwareBuffer
+                    bg.post {
+                        runCatching {
+                            val full = Bitmap.wrapHardwareBuffer(hb, result.colorSpace) ?: return@runCatching
+                            // A hardware bitmap cannot be drawn in software: copy it first, then reduce
+                            val soft = full.copy(Bitmap.Config.ARGB_8888, false)
+                            full.recycle()
+                            val w = 540
+                            val small = Bitmap.createScaledBitmap(soft, w, (w * soft.height / soft.width.toFloat()).toInt().coerceAtLeast(1), true)
+                            if (small !== soft) soft.recycle()
+                            // A private screen (banking, passwords) comes back black: never keep those
+                            if (isBlank(small)) small.recycle()
+                            else main.post { snapshots[pkg] = small; snapshotAt[pkg] = SystemClock.uptimeMillis() }
+                        }
+                        hb.close()
+                    }
+                }
+                override fun onFailure(errorCode: Int) = Unit
+            })
+            true
+        }.getOrDefault(false)
     }
 
     /**

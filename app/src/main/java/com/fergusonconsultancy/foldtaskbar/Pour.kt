@@ -73,6 +73,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private var picture: Bitmap? = null
     private var icon: Drawable? = null
     private var body = Color.DKGRAY
+    private var splash = Color.DKGRAY
     private var t = 0f
     private var running: Animator? = null
     private var lamp = false
@@ -160,6 +161,10 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         // A private copy: the cached icon is shared with the bar and must not be resized here
         icon = appIcon?.constantState?.newDrawable(context.resources)?.mutate()
         body = icon?.let { tone(it) } ?: Color.DKGRAY
+        // The splash: mostly the deep ground of the bar's family, with a quarter of the app's colour
+        splash = blendColour(0xFF0E1311.toInt(), body, 0.28f)
+        // Cascata is a mosaic of the app's picture; without one, it rises as Fuoco instead
+        if (this.look == Look.CASCATA && picture == null) this.look = Look.FUOCO
         running?.cancel()
         animate().cancel()
         alpha = 1f
@@ -298,20 +303,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             src.set((pic.width - sw) / 2, (pic.height - sh) / 2, (pic.width + sw) / 2, (pic.height + sh) / 2)
             canvas.drawBitmap(pic, src, r, paint)
         } else {
-            fill.color = body
-            canvas.drawRect(r, fill)
-        }
-        // Without a picture, the icon rides in the middle of its own colour, like a splash screen
-        if (picture == null) icon?.let { d ->
-            val k = (1f - b * 1.6f).coerceIn(0f, 1f)
-            if (k > 0f) {
-                val s = from.width() * (1f + b * 0.6f)
-                val cx = r.centerX(); val cy = r.centerY()
-                d.setBounds((cx - s / 2).toInt(), (cy - s / 2).toInt(), (cx + s / 2).toInt(), (cy + s / 2).toInt())
-                d.alpha = (k * 255).toInt()
-                d.draw(canvas)
-                d.alpha = 255
-            }
+            picture(canvas, r)
         }
         canvas.restore()
         // A thin line of light along the rim, like the meniscus of a liquid, fading as it lands
@@ -356,10 +348,27 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         path.close()
     }
 
-    /** Draws the picture (or the icon's tone) into [dst], centre-cropped from the region [region] of the screen. */
+    /**
+     * Draws the picture into [dst], centre-cropped from the region [region] of the screen. With
+     * no picture yet (an app the bar has not seen), a calm splash instead: a deep surface with a
+     * trace of the app's colour and its icon at the centre, never a flat blob of colour.
+     */
     private fun picture(canvas: Canvas, dst: RectF, region: RectF? = null) {
         val pic = picture
-        if (pic == null) { fill.color = body; canvas.drawRect(dst, fill); return }
+        if (pic == null) {
+            fill.color = splash
+            fill.alpha = paint.alpha
+            canvas.drawRect(dst, fill)
+            fill.alpha = 255
+            if (region == null) icon?.let { d ->
+                val s = (minOf(dst.width(), dst.height()) * 0.16f).coerceIn(context.dp(40).toFloat(), context.dp(88).toFloat())
+                d.setBounds((dst.centerX() - s / 2).toInt(), (dst.centerY() - s / 2).toInt(), (dst.centerX() + s / 2).toInt(), (dst.centerY() + s / 2).toInt())
+                d.alpha = paint.alpha
+                d.draw(canvas)
+                d.alpha = 255
+            }
+            return
+        }
         if (region == null) {
             val scale = maxOf(dst.width() / pic.width, dst.height() / pic.height)
             val sw = (dst.width() / scale).toInt().coerceIn(1, pic.width)
@@ -480,6 +489,11 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             sheen.color = Color.argb((110 * (1f - smooth(g / 0.7f))).toInt().coerceIn(0, 255), 236, 214, 170)
             if (Color.alpha(sheen.color) > 2) canvas.drawPath(path, sheen)
         }
+    }
+
+    private fun blendColour(a: Int, b: Int, t: Float): Int {
+        fun ch(sh: Int) = (((a shr sh) and 255) * (1 - t) + ((b shr sh) and 255) * t).toInt()
+        return (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
     }
 
     private fun smooth(x: Float): Float { val c = x.coerceIn(0f, 1f); return c * c * (3f - 2f * c) }
