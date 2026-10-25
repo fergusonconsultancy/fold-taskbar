@@ -282,16 +282,8 @@ class MainActivity : Activity() {
                 p.style = Paint.Style.STROKE; p.strokeWidth = 1.6f; p.color = Kit.CHAMPAGNE; c.drawPath(path, p); p.style = Paint.Style.FILL
             }
             else -> {
-                p.color = if (m == Motion.FANALE) Color.rgb(36, 30, 32) else Color.rgb(88, 104, 96)
+                p.color = Color.rgb(88, 104, 96)
                 c.drawRoundRect(win, 8f, 8f, p)
-            }
-        }
-        if (m == Motion.FANALE) {
-            p.color = Color.rgb(255, 128, 112)
-            for (k in 0..7) c.drawCircle(win.left + 2f, win.top + win.height() * (0.08f + 0.12f * k), 2.2f, p)
-            for (k in 0 until 10) {
-                val a = Math.PI * 2 * k / 10
-                c.drawCircle(icon.centerX() + icon.width() * 0.75f * Math.cos(a).toFloat(), icon.centerY() + icon.width() * 0.75f * Math.sin(a).toFloat(), 1.6f, p)
             }
         }
     }
@@ -308,11 +300,11 @@ class MainActivity : Activity() {
             "Rosso lacquer" to "Alfa red that keeps its contrast: oxblood over bright screens, a brighter rosso over dark ones. Ivory ink and a champagne light throughout.",
             "One landing" to "Every switch drawn by the bar lands on one deceleration and stops exactly on the app's own window, pixel for pixel, so the hand-over to the live app is a cut you cannot see. Nothing overshoots and comes back. What you leave recedes into the bar's dark ground as the new app comes forward.",
             "Fuoco and Onda" to "The depth switches. Whatever you are leaving falls out of focus behind the arriving app and returns as it settles. Fuoco is a focus pull: the app rises soft from the icon and sharpens as it fills the screen. Onda opens as a circle from the icon, its rim a fine meniscus. Cycle within 700ms of the last switch and Concentrato makes each one quicker and shallower.",
-            "Lama" to "The Alfa light line as a switch. A blade of champagne light is drawn out of the icon along the bar, and the app is uncovered from it as the slit widens. Nothing flies and nothing scales: the app is already in place, and the light opens it.",
+            "Lama" to "The Alfa light line as a switch. Two points of light race out of the icon in opposite directions, drawing a blade of champagne light along the bar to the screen's edges, and the app is uncovered from it as the slit widens. Each lip is a fine line of light falling onto the app it uncovers, with a soft shadow on its other side, so the cover reads as a thin sheet with an edge. Nothing flies and nothing scales.",
+            "No colour blocks" to "Until the bar has a picture of an app, its motion is carried by light over the bar's own dark glass, never a block of the app's colour. Pictures are kept privately in the app's own storage, so they survive a restart; secure screens such as banking apps are never kept.",
             "Zoom, Reveal, Grow" to "Now drawn by the bar, because One UI ignored Android's classic launch animations and played its own task switch for all three. Zoom: the icon's artwork swells and gives way to the app. Reveal: nothing scales; a window widens from the icon and uncovers the app in place. Grow: the whole app at its true proportions scales up out of the icon.",
             "No friction" to "Every motion but System launches the app with Android's own animation switched off, so nothing plays underneath the bar's motion and nothing is still settling when it hands over. The hand-over waits until the app has drawn its real screen, never its splash.",
             "The active-app pill" to "Adaptive. It reads the glass beneath it, zone by zone, and takes whichever tone stands out: light champagne with a soft glow and a dark ring over dark glass, deep bronze with a light ring over light glass. It is a little longer and thicker than before, and it still travels between apps as a liquid.",
-            "Fanale" to "A ring of LED beads sweeps round the icon you touched and the app crosses the screen on a beaded edge of light, the Giulietta's rear lamp at night.",
             "Membrana" to "The app arrives as a membrane. Each edge is held at its corners and bows against its own speed, so every curve on screen is a measure of speed. As it lands the curves relax and it snaps taut, with a fine champagne meniscus.",
             "Two handles" to "With the hinge pair, each half has its own handle: the grid button and a grip of six dots. Hold either and slide to move that half alone.",
         )

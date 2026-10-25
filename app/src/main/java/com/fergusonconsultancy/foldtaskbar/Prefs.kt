@@ -9,11 +9,10 @@ import android.content.SharedPreferences
  */
 enum class Motion(val label: String) {
     // Drawn by the bar itself (see Pour.kt), in the order offered
-    FANALE("Fanale: a tail-light ring lights round the icon and the app arrives on a beaded edge of light (drawn by the bar)"),
     MEMBRANA("Membrana: the app arrives as a membrane, its edges bowing against their own speed and snapping taut (drawn by the bar)"),
     FUOCO("Fuoco: the app behind falls out of focus while the new one rises from its icon, soft, and sharpens as it fills the screen (drawn by the bar)"),
     ONDA("Onda: the app wells up from its icon in a widening circle as the app behind falls out of focus (drawn by the bar)"),
-    LAMA("Lama: a blade of light is drawn out of the icon along the bar and the app is uncovered from it, the slit widening into the screen (drawn by the bar)"),
+    LAMA("Lama: two points of light race out of the icon drawing a blade along the bar, and the app is uncovered from it, light falling from each lip onto the app (drawn by the bar)"),
     ZOOM("Zoom: the icon itself swells into the app, its artwork giving way to the screen you left (drawn by the bar)"),
     REVEAL("Reveal: nothing moves but the opening. The app is already in place and a window widens from the icon to uncover it (drawn by the bar)"),
     GROW("Grow: the whole app, at its true proportions, scales up out of the icon (drawn by the bar)"),
@@ -22,7 +21,7 @@ enum class Motion(val label: String) {
 
     /** The motions the bar draws itself, and how. */
     val look: Look? get() = when (this) {
-        FANALE -> Look.FANALE; MEMBRANA -> Look.MEMBRANA; FUOCO -> Look.FUOCO
+        MEMBRANA -> Look.MEMBRANA; FUOCO -> Look.FUOCO
         ONDA -> Look.ONDA; LAMA -> Look.LAMA
         ZOOM -> Look.ZOOM; REVEAL -> Look.REVEAL; GROW -> Look.GROW; SYSTEM -> null
     }
@@ -129,8 +128,9 @@ object Prefs {
     fun motion(c: Context): Motion = when (val s = of(c).getString(MOTION, null)) {
         "POUR" -> Motion.MEMBRANA
         "CASCATA" -> Motion.LAMA
-        null -> Motion.FANALE
-        else -> runCatching { Motion.valueOf(s) }.getOrDefault(Motion.FANALE)
+        "FANALE" -> Motion.LAMA // Fanale retired from the bar, 25 Oct 2026
+        null -> Motion.LAMA
+        else -> runCatching { Motion.valueOf(s) }.getOrDefault(Motion.LAMA)
     }
     fun setMotion(c: Context, v: Motion) = of(c).edit().putString(MOTION, v.name).apply()
 
@@ -139,7 +139,7 @@ object Prefs {
         val p = of(c)
         if (p.getBoolean("fanale_offered", false)) return
         p.edit().putBoolean("fanale_offered", true).apply {
-            if (p.getString(MOTION, null) == "POUR") putString(MOTION, Motion.FANALE.name)
+            if (p.getString(MOTION, null) == "POUR") putString(MOTION, Motion.LAMA.name)
         }.apply()
     }
 

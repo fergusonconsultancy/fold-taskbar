@@ -822,6 +822,31 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         }
     }
 
+    /**
+     * Pictures survive a restart (25 Oct 2026): kept as small JPEGs in the app's private cache,
+     * which no other app can read and which Android clears on uninstall. Without this, every
+     * update or reboot left the bar with no pictures, and the first switch to each app had
+     * nothing to show. Blank (secure) screens are never kept, as before.
+     */
+    private fun snapshotFile(pkg: String) = java.io.File(java.io.File(cacheDir, "switch").apply { mkdirs() }, "$pkg.jpg")
+
+    private fun keepSnapshot(pkg: String, bmp: Bitmap, bounds: Rect?) {
+        runCatching {
+            snapshotFile(pkg).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+            getSharedPreferences("switch_pictures", MODE_PRIVATE).edit()
+                .putString(pkg, bounds?.flattenToString()).apply()
+        }
+    }
+
+    private fun loadSnapshot(pkg: String): Bitmap? = runCatching {
+        val f = snapshotFile(pkg)
+        if (!f.exists()) return null
+        val b = android.graphics.BitmapFactory.decodeFile(f.path) ?: return null
+        snapshots[pkg] = b
+        getSharedPreferences("switch_pictures", MODE_PRIVATE).getString(pkg, null)?.let { Rect.unflattenFromString(it) }?.let { snapshotBounds[pkg] = it }
+        b
+    }.getOrNull()
+
     /** Pictures [pkg] from its own window (Android 14 and later), so nothing of the bar is in it. */
     private fun pictureWindow(pkg: String): Boolean {
         if (android.os.Build.VERSION.SDK_INT < 34) return false
@@ -844,7 +869,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                             if (small !== soft) soft.recycle()
                             // A private screen (banking, passwords) comes back black: never keep those
                             if (isBlank(small)) small.recycle()
-                            else main.post { snapshots[pkg] = small; snapshotBounds[pkg] = bounds; snapshotAt[pkg] = SystemClock.uptimeMillis() }
+                            else { keepSnapshot(pkg, small, bounds); main.post { snapshots[pkg] = small; snapshotBounds[pkg] = bounds; snapshotAt[pkg] = SystemClock.uptimeMillis() } }
                         }
                         hb.close()
                     }
@@ -1109,7 +1134,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (onScreen.size == 1 && onScreen.first() == pkg) { closePanels(); return }
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
-        val pic = snapshots[pkg]
+        val pic = snapshots[pkg] ?: loadSnapshot(pkg)
         val motion = Prefs.motion(this)
         val look = motion.look
         // The bar's motion goes up first, on this frame, so the quietly launched app appears
