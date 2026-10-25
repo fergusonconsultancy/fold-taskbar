@@ -1259,9 +1259,15 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }.isSuccess
         // The screen being left is pictured first and held under the motion; only then does the
         // new app launch beneath it, so it is never glimpsed early (see Pour.setBackdrop)
-        if (drawn) captureLeaving { shot, area -> pour.setBackdrop(shot, area, backdropSoft); backdropSoft = null; apps.openQuiet(pkg) }
+        // Opened from the grid: the grid is not part of that picture, so as the picture fades in
+        // over 90ms the grid fades away with it, then is put away at once with no hidden drain
+        val fromGrid = drawn && ::drawer.isInitialized && drawer.isOpen
+        if (drawn) captureLeaving { shot, area ->
+            pour.setBackdrop(shot, area, backdropSoft); backdropSoft = null; apps.openQuiet(pkg)
+            if (fromGrid) main.postDelayed({ drawer.close(animated = false) }, 110)
+        }
         else apps.open(pkg, source, pic)
-        closePanels()
+        if (fromGrid) closeMenu() else closePanels()
         if (Prefs.autoHide(this) && revealed) {
             main.removeCallbacks(autoHideNow)
             main.postDelayed(autoHideNow, 600)
@@ -1314,7 +1320,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     override fun onAllApps(view: View) {
         closeMenu()
         pairingFirst = null
-        if (drawer.isOpen) drawer.close() else { readDrawerBackdrop(); drawer.open(view as? GlyphView) }
+        if (drawer.isOpen) drawer.close() else { attachDrawer(); readDrawerBackdrop(); drawer.open(view as? GlyphView) }
         onBarTouched()
     }
 
@@ -1953,7 +1959,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         } else {
             if (roomAbove >= roomBelow) AppDrawer.Side.BOTTOM else AppDrawer.Side.TOP
         }
-        val rect = when (side) {
+        val free = when (side) {
             AppDrawer.Side.BOTTOM, AppDrawer.Side.TOP -> {
                 val w = minOf((s.width() * 0.8f).toInt(), dp(760))
                 val room = if (side == AppDrawer.Side.BOTTOM) roomAbove else roomBelow
@@ -1971,7 +1977,29 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 Rect(l, t, l + w, t + h)
             }
         }
-        val rebuilt = drawer.attach(Prefs.finish(this), rect, side)
+        // Flush with the bar (25 Oct 2026): the grid's edges meet the capsule's ends, widened
+        // evenly about the bar only when the bar is too short to hold a useful grid
+        val lat = capsules.firstOrNull()?.lattice()
+        val rect = if (lat == null) free else when (side) {
+            AppDrawer.Side.BOTTOM, AppDrawer.Side.TOP -> {
+                val minW = dp(460); val maxW = s.width() - 2 * margin
+                var l = lat.bar.left; var r = lat.bar.right
+                if (r - l < minW) { val c = (l + r) / 2; l = c - minW / 2; r = c + minW / 2 }
+                if (r - l > maxW) { l = margin; r = s.width() - margin }
+                if (l < margin) { r += margin - l; l = margin }
+                if (r > s.width() - margin) { l -= r - (s.width() - margin); r = s.width() - margin }
+                Rect(l, free.top, r, free.bottom)
+            }
+            else -> {
+                val minH = dp(380)
+                var t = lat.bar.top; var b = lat.bar.bottom
+                if (b - t < minH) { val c = (t + b) / 2; t = c - minH / 2; b = c + minH / 2 }
+                if (t < top) { b += top - t; t = top }
+                if (b > bottom) { t -= b - bottom; b = bottom }
+                Rect(free.left, t.coerceAtLeast(top), free.right, b)
+            }
+        }
+        val rebuilt = drawer.attach(Prefs.finish(this), rect, side, lat)
         // The pour sits above the grid, so an app opened from the grid swells over it, and
         // under the bar, which is lifted back above both
         if (rebuilt) {

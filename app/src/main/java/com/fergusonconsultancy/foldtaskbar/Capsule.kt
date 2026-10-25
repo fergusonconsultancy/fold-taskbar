@@ -74,6 +74,19 @@ class Capsule(
         clipToPadding = false
     }
 
+    /**
+     * Where this capsule sits on screen and the rhythm of its icons, so the app grid can be
+     * laid on exactly the same lattice (25 Oct 2026). Null until it has been laid out.
+     */
+    fun lattice(): Lattice? {
+        if (!isAttachedToWindow || width == 0 || height == 0) return null
+        val loc = IntArray(2).also { getLocationOnScreen(it) }
+        val first = (0 until childCount).map { getChildAt(it) }.firstOrNull { it.visibility == VISIBLE && it.width > 0 && it !in dividers } ?: return null
+        val anchor = if (vertical) loc[1] + first.top + first.height / 2f else loc[0] + first.left + first.width / 2f
+        return Lattice(android.graphics.Rect(loc[0], loc[1], loc[0] + width, loc[1] + height), anchor,
+            (context.dp(iconDp) + gap).toFloat(), context.dp(iconDp), vertical)
+    }
+
     /** Docked against a side edge, the capsule stands upright. */
     var vertical = false
         set(v) {
