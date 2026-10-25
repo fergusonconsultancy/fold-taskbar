@@ -429,6 +429,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private var backdrop: Bitmap? = null
     private var softBack: Bitmap? = null
     private var coverOpaque = false
+    private var coverAt = 0L
+    private var coverFrom = 0f
     private val backSrc = Rect()
     private val backDst = RectF()
 
@@ -437,13 +439,15 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         if (visibility != VISIBLE) { shot?.recycle(); return }
         backdrop?.recycle(); softBack?.recycle(); softBack = null
         backdrop = shot
-        if (shot == null || area == null) { coverOpaque = true; invalidate(); return }
+        if (shot == null || area == null) { coverOpaque = true; coverAt = android.os.SystemClock.uptimeMillis(); coverFrom = veilLevel(); invalidate(); return }
         val mine = IntArray(2).also { getLocationOnScreen(it) }
         backDst.set((area.left - mine[0]).toFloat(), (area.top - mine[1]).toFloat(), (area.right - mine[0]).toFloat(), (area.bottom - mine[1]).toFloat())
         // Fuoco and Onda: the screen you leave falls out of focus (drawn, not a window blur, so it costs nothing per frame)
         if ((look == Look.FUOCO || look == Look.ONDA) && !quick) softBack = makeSoft(shot)
         invalidate()
     }
+
+    private fun veilLevel() = (if (quick) 0.32f else 0.52f) * smooth(t / 0.12f)
 
     private fun drawBackdrop(canvas: Canvas) {
         val b = backdrop ?: return
@@ -457,11 +461,14 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     /** Rises within the first eighth of the switch and stays until the hand-over. */
     private fun veil(canvas: Canvas) {
         if (coverOpaque) {
-            ground.alpha = 255
+            // Eases from wherever the veil was to the full dark ground in 90ms, never a snap
+            val k = smooth((android.os.SystemClock.uptimeMillis() - coverAt) / 90f)
+            ground.alpha = (255 * mix(coverFrom, 1f, k)).toInt()
             canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), ground)
+            if (k < 1f) postInvalidateOnAnimation()
             return
         }
-        val v = (if (quick) 0.32f else 0.52f) * smooth(t / 0.12f)
+        val v = veilLevel()
         if (v <= 0.004f) return
         ground.alpha = (255 * v).toInt()
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), ground)
