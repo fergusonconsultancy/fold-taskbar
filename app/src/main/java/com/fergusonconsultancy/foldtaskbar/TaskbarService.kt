@@ -110,6 +110,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
         Prefs.offerFanale(this)
+        listenForScrolls()
         val filter = android.content.IntentFilter("com.fergusonconsultancy.foldmotion.REVEAL")
         if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(revealReceiver, filter, RECEIVER_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(revealReceiver, filter)
@@ -184,7 +185,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     override fun onSharedPreferenceChanged(p: SharedPreferences?, key: String?) {
-        if (key == "presence") main.post { restIfTrim() }
+        if (key == "presence") main.post { restIfTrim(); listenForScrolls() }
         if (key == Prefs.ICON_PACK) {
             // New icons everywhere: rebuild the bar and reload the grid
             layoutKey = ""
@@ -196,7 +197,56 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     // ---- Watching the screen ------------------------------------------------------
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = scheduleScan()
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Scrolls are only listened for when the bar's presence is Recede, and never rescan the screen
+        if (event?.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
+            if (event.packageName?.toString() == onScreen.firstOrNull()) main.post { recede() }
+            return
+        }
+        scheduleScan()
+    }
+
+    // ---- Recede (25 Oct 2026): Concentrato for the bar --------------------------------------
+    // While the app beneath is scrolled, the bar steps back: it fades to a faint presence and
+    // eases a little towards its edge, so what you are reading has the screen. When the scrolling
+    // stops it returns, unhurried. A touch on it brings it back at once.
+    private var receded = false
+    private val comeBack = Runnable { returnFromRecede(gentle = true) }
+
+    private fun recede() {
+        if (Prefs.presence(this) != Presence.RECEDE || !barOn || (::drawer.isInitialized && drawer.isOpen) || menuWindow != null) return
+        main.removeCallbacks(comeBack); main.postDelayed(comeBack, RECEDE_HOLD_MS)
+        if (receded) return
+        receded = true
+        hosts.forEach { h ->
+            if (h.visibility != View.VISIBLE || h.tag != null) return@forEach
+            h.animate().cancel()
+            h.animate().alpha(0.22f).scaleX(0.95f).scaleY(0.95f).setStartDelay(0).setDuration(240).setInterpolator(Curves.OPEN).start()
+        }
+    }
+
+    private fun returnFromRecede(gentle: Boolean) {
+        main.removeCallbacks(comeBack)
+        if (!receded) return
+        receded = false
+        hosts.forEach { h ->
+            if (h.visibility != View.VISIBLE || h.tag != null) return@forEach
+            h.animate().cancel()
+            h.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(if (gentle) 460 else 160)
+                .setInterpolator(android.view.animation.PathInterpolator(0.25f, 0.1f, 0.25f, 1f)).start()
+        }
+    }
+
+    /** Listens for scrolls only while the presence is Recede, so no other presence pays for them. */
+    private fun listenForScrolls() {
+        val info = serviceInfo ?: return
+        val want = Prefs.presence(this) == Presence.RECEDE
+        val has = info.eventTypes and AccessibilityEvent.TYPE_VIEW_SCROLLED != 0
+        if (want == has) return
+        info.eventTypes = if (want) info.eventTypes or AccessibilityEvent.TYPE_VIEW_SCROLLED else info.eventTypes and AccessibilityEvent.TYPE_VIEW_SCROLLED.inv()
+        serviceInfo = info
+        if (!want) returnFromRecede(gentle = false)
+    }
 
     private val scan = Runnable {
         scanWindows()
@@ -324,9 +374,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val iconDp = Prefs.iconDp(this)
         val bounds = liveBounds()
         val geometry = "${bounds.width()}x${bounds.height()}|${resources.configuration.densityDpi}"
-        val key = "$shape|$finish|$iconDp|$geometry"
+        val profile = Prefs.profile(this)
+        val key = "$shape|$finish|$iconDp|$profile|$geometry"
         if (key != layoutKey || hosts.isEmpty()) {
-            val onlyGeometry = hosts.isNotEmpty() && layoutLook == "$shape|$finish|$iconDp"
+            val onlyGeometry = hosts.isNotEmpty() && layoutLook == "$shape|$finish|$iconDp|$profile"
             val now = SystemClock.uptimeMillis()
             // Waiting only protects a bar that is on screen; one arriving after an unfold has
             // nothing to protect, so it is laid out at once
@@ -341,7 +392,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 layoutBounds = Rect(bounds)
                 buildBar(shape, finish, iconDp)
                 layoutKey = key
-                layoutLook = "$shape|$finish|$iconDp"
+                layoutLook = "$shape|$finish|$iconDp|$profile"
                 if (onlyGeometry) EventLog.add(this, "Screen settled at $geometry: bar laid out again")
             }
         } else pendingKey = null
@@ -1103,6 +1154,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** Any touch on the bar keeps it up for a few more seconds. */
     private fun onBarTouched() {
+        returnFromRecede(gentle = false)
         if (Prefs.autoHide(this) && revealed) scheduleAutoHide()
         scheduleRest()
     }
@@ -2097,6 +2149,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     companion object {
         /** How long a change of screen shape or insets must hold before the bar moves for it. */
         const val SETTLE_MS = 320L
+        /** How long after the last scroll a receded bar waits before returning. */
+        const val RECEDE_HOLD_MS = 700L
         /** The bar's entrance after an unfold: long and gentle. */
         const val ENTRANCE_MS = 560L
         /** Longest the bar waits for Fold Motion to say its reveal is over. */
