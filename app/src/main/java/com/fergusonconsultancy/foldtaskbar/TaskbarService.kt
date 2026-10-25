@@ -110,6 +110,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
         Prefs.offerFanale(this)
+        val filter = android.content.IntentFilter("com.fergusonconsultancy.foldmotion.REVEAL")
+        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(revealReceiver, filter, RECEIVER_EXPORTED)
+        else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(revealReceiver, filter)
         preloadPictures()
         guide = DragGuide(this, wm)
         getSystemService(android.hardware.SensorManager::class.java)?.let { sm ->
@@ -137,6 +140,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         runCatching { getSystemService(android.hardware.SensorManager::class.java)?.unregisterListener(this) }
         runCatching { Prefs.of(this).unregisterOnSharedPreferenceChangeListener(this) }
         runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
+        runCatching { unregisterReceiver(revealReceiver) }
         removeBar()
         removeTab()
         closePanels()
@@ -274,6 +278,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private fun vanish() {
         main.removeCallbacks(hideNow)
         barOn = false
+        arriving = true
         hosts.forEach { it.animate().cancel(); it.tag = null; it.visibility = View.GONE; it.alpha = 1f }
         closeMenu()
         if (::drawer.isInitialized) drawer.close(animated = false)
@@ -317,13 +322,15 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val shape = Prefs.shape(this)
         val finish = Prefs.finish(this)
         val iconDp = Prefs.iconDp(this)
-        val bounds = wm.currentWindowMetrics.bounds
-        val geometry = "${bounds.width()}x${bounds.height()}|${navInset()}|${resources.configuration.densityDpi}"
+        val bounds = liveBounds()
+        val geometry = "${bounds.width()}x${bounds.height()}|${resources.configuration.densityDpi}"
         val key = "$shape|$finish|$iconDp|$geometry"
         if (key != layoutKey || hosts.isEmpty()) {
             val onlyGeometry = hosts.isNotEmpty() && layoutLook == "$shape|$finish|$iconDp"
             val now = SystemClock.uptimeMillis()
-            if (onlyGeometry && (pendingKey != key || now - pendingKeyAt < SETTLE_MS)) {
+            // Waiting only protects a bar that is on screen; one arriving after an unfold has
+            // nothing to protect, so it is laid out at once
+            if (onlyGeometry && barOn && (pendingKey != key || now - pendingKeyAt < SETTLE_MS)) {
                 // The screen changed shape or insets: wait until it holds still before moving the
                 // bar, so a passing change during an app switch never shows (24 Oct 2026)
                 if (pendingKey != key) { pendingKey = key; pendingKeyAt = now }
@@ -363,13 +370,66 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         return lp.y + hosts[i].height - dp(10) <= top
     }
 
+    // ---- The entrance (25 Oct 2026) -----------------------------------------------------
+    // After an unfold the bar does not simply appear: once the screen is whole (Fold Motion
+    // tells us when its reveal ends; without it, at once) the bar rises a little way from the
+    // edge it rests against, its glass coming into view on a long, soft ease, and its icons
+    // settle in from the middle outwards. Unhurried, never bouncing: an invitation.
+
+    /** Set when the bar vanished for a fold; the next arrival is an entrance. */
+    private var arriving = false
+    /** True while an entrance is being played by showHost. */
+    private var entering = false
+    /** Until when Fold Motion is covering the screen with its opening (0 when it is not). */
+    private var coveredUntil = 0L
+
+    private val revealReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context?, i: Intent?) {
+            when (i?.getStringExtra("phase")) {
+                "covering" -> {
+                    coveredUntil = SystemClock.uptimeMillis() + COVER_FAILSAFE_MS
+                    main.removeCallbacks(coverEnded); main.postDelayed(coverEnded, COVER_FAILSAFE_MS)
+                }
+                "revealed" -> { main.removeCallbacks(coverEnded); coverEnded.run() }
+            }
+        }
+    }
+    private val coverEnded = Runnable { coveredUntil = 0L; main.removeCallbacks(applyNow); main.post(applyNow) }
+
+    private fun covered() = SystemClock.uptimeMillis() < coveredUntil
+
+    private fun entrance(host: BarHost) {
+        val i = hosts.indexOf(host)
+        val spot = spotFor(Prefs.shape(this), i.coerceAtLeast(0))
+        val rise = dp(16).toFloat()
+        // From the edge it rests against: up from the bottom, down from the top, in from a side
+        val (dx, dy) = if (spot.vertical) (if (spot.fx < 0.5f) -rise else rise) to 0f
+            else 0f to (if (spot.fy < 0.4f) -rise else rise)
+        host.alpha = 0f
+        host.translationX = dx; host.translationY = dy
+        host.scaleX = 0.97f; host.scaleY = 0.97f
+        host.animate().alpha(1f).translationX(0f).translationY(0f).scaleX(1f).scaleY(1f)
+            .setStartDelay(0).setDuration(ENTRANCE_MS)
+            .setInterpolator(android.view.animation.PathInterpolator(0.25f, 0.1f, 0.25f, 1f)).start()
+        capsules.getOrNull(i)?.enter(120, dx, dy)
+    }
+
     private fun setBarOn(on: Boolean) {
-        barOn = on
+        // Arriving after a fold: hold the bar back while Fold Motion's reveal covers the screen,
+        // then make the entrance
+        if (on && arriving && covered()) {
+            barOn = true
+            hosts.forEach { it.animate().cancel(); it.visibility = View.GONE }
+            return
+        }
+        entering = on && arriving
+        if (entering) arriving = false
         hosts.forEachIndexed { i, host ->
             val want = hostWanted(i)
             if (want && host.visibility != View.VISIBLE) place(i)
             showHost(host, want)
         }
+        entering = false
         if (!on) closePanels()
     }
 
@@ -381,7 +441,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (show) {
             host.tag = null
             host.visibility = View.VISIBLE
-            if (toward != null) {
+            if (entering) {
+                entrance(host)
+            } else if (toward != null) {
                 // Expanding: the capsule grows back out of the tab
                 val (tx, ty) = offsetTo(host, toward)
                 host.translationX = tx * 0.7f; host.translationY = ty * 0.7f
@@ -440,7 +502,19 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     // ---- Where the bar sits -------------------------------------------------------
 
-    private fun screen(): Rect = layoutBounds?.takeIf { hosts.isNotEmpty() } ?: wm.currentWindowMetrics.bounds
+    private fun screen(): Rect = layoutBounds?.takeIf { hosts.isNotEmpty() } ?: liveBounds()
+
+    /**
+     * The main screen's size, read from the display itself (25 Oct 2026). This service's own
+     * window metrics can lag an unfold by seconds; laying the bar out from them meant waiting,
+     * or laying it out for the cover screen and then again for the main one.
+     */
+    private fun liveBounds(): Rect {
+        val d = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+        val m = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION") d?.getRealMetrics(m)
+        return if (m.widthPixels > 0) Rect(0, 0, m.widthPixels, m.heightPixels) else wm.currentWindowMetrics.bounds
+    }
     private fun statusInset() =
         wm.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars()).top
     private fun navInset(): Int =
@@ -1851,7 +1925,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
      * if it covers the screen, says so plainly in the log and offers the reliable route.
      */
     private fun openPopupChecked(pkg: String) {
-        val screen = wm.currentWindowMetrics.bounds
+        val screen = liveBounds()
         if (!apps.openPopup(pkg, screen)) { hint("${apps.entry(pkg)?.label ?: "This app"} couldn't open as a pop-up", null); return }
         main.postDelayed({
             val win = runCatching { windows }.getOrDefault(emptyList()).firstOrNull { w ->
@@ -2023,6 +2097,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     companion object {
         /** How long a change of screen shape or insets must hold before the bar moves for it. */
         const val SETTLE_MS = 320L
+        /** The bar's entrance after an unfold: long and gentle. */
+        const val ENTRANCE_MS = 560L
+        /** Longest the bar waits for Fold Motion to say its reveal is over. */
+        const val COVER_FAILSAFE_MS = 2200L
 
         @Volatile var running = false
         @Volatile var instance: TaskbarService? = null

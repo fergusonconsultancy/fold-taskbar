@@ -87,6 +87,27 @@ class Capsule(
             (context.dp(iconDp) + gap).toFloat(), context.dp(iconDp), vertical)
     }
 
+    /**
+     * The entrance (25 Oct 2026): the icons settle into the glass from the middle outwards, each
+     * rising a few points from the direction the bar arrives from and coming into full view on a
+     * long, gentle ease, so the bar seems to wake and turn towards you. [dx], [dy] point the way
+     * the bar itself travels in.
+     */
+    fun enter(delay: Long, dx: Float, dy: Float) {
+        val kids = (0 until childCount).map { getChildAt(it) }.filter { it.visibility == VISIBLE }
+        if (kids.isEmpty()) return
+        val mid = (kids.size - 1) / 2f
+        val ease = android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)
+        kids.forEachIndexed { i, v ->
+            v.animate().cancel()
+            v.alpha = 0f
+            v.translationX = dx * 0.45f; v.translationY = dy * 0.45f
+            v.animate().alpha(1f).translationX(0f).translationY(0f)
+                .setStartDelay(delay + (kotlin.math.abs(i - mid) * 34f).toLong())
+                .setDuration(460).setInterpolator(ease).start()
+        }
+    }
+
     /** Docked against a side edge, the capsule stands upright. */
     var vertical = false
         set(v) {
