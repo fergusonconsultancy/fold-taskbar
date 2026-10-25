@@ -169,6 +169,7 @@ class AppDrawer(
     fun attach(finish: Finish, rect: android.graphics.Rect, side: Side, lat: Lattice? = null): Boolean {
         val widthPx = rect.width(); val heightPx = rect.height()
         val k = "$finish|$rect|$side|$lat"
+        finishNow = finish
         if (k == key && panelHost != null) return false
         detach()
         key = k
@@ -260,7 +261,7 @@ class AppDrawer(
                 textSize = 11.5f
                 typeface = Kit.sans(context, 500)
                 letterSpacing = 0.18f
-                setTextColor(Kit.CHAMPAGNE)
+                setTextColor(if (finish.adaptive) faceFor(finish, 0xFF1A1F1C.toInt(), false).glow else finish.indicator)
                 // Lined up with the first column's icon
                 setPadding(padStart + ((cellW - iconPx) / 2f).toInt(), 0, 0, context.dp(4))
                 minHeight = titleH - context.dp(18)
@@ -381,17 +382,35 @@ class AppDrawer(
      * is deep smoke with a trace of that colour; over a dark one it lifts a step, so it always
      * stands clear of what is behind it. [colour] and [lum] are read from the screen under it.
      */
+    private var finishNow: Finish? = null
+    private var lightNow: Boolean? = null
+
+    /**
+     * The grid wears what the bar is wearing (25 Oct 2026): the same finish, adapted the same
+     * way to the screen it opens over (see faceFor). Over a dark screen smoked glass turns to
+     * light glass with dark ink, exactly as the bar does; fixed finishes keep their own face.
+     */
     fun setBackdrop(colour: Int, lum: Float) {
         val l = liquid ?: return
-        val base = if (lum > 0.5f) 0xFF0E1311.toInt() else 0xFF232B27.toInt()
-        val target = blend(base, colour or 0xFF000000.toInt(), if (lum > 0.5f) 0.12f else 0.2f)
-        val alpha = if (blurSupported) 0xE0 else 0xF5
-        val from = l.tone
+        val finish = finishNow ?: return
+        if (!finish.adaptive) return
+        val light = lightOver(lum, lightNow)
+        lightNow = light
+        val face = faceFor(finish, colour or 0xFF000000.toInt(), light)
+        // Never thinner than the bar's own glass; with the screen behind blurred it can be a touch clearer
+        val alpha = maxOf((face.fill ushr 24), if (blurSupported) 0xE0 else 0xF5)
+        val from = l.tone; val fromEdge = l.edgeColour; val fromInk = adapter?.ink ?: face.ink
+        val fromTitle = title?.currentTextColor ?: face.glow
         android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 180
+            duration = 220
+            interpolator = Curves.OPEN
             addUpdateListener {
-                val c = blend(from, target, it.animatedFraction)
-                l.tone = (c and 0x00FFFFFF) or (alpha shl 24); l.invalidate()
+                val k = it.animatedFraction
+                l.tone = (blend(from, face.fill, k) and 0x00FFFFFF) or (alpha shl 24)
+                l.edgeColour = blend(fromEdge, face.edge, k)
+                l.invalidate()
+                adapter?.ink = blend(fromInk, face.ink, k)
+                title?.setTextColor(blend(fromTitle, face.glow, k))
             }
             start()
         }
@@ -479,11 +498,12 @@ class AppDrawer(
         val inset = context.dp(10).toFloat()
         private val path = android.graphics.Path()
         // Adaptive finishes take their tone from the screen beneath (setBackdrop); fixed finishes keep theirs
-        var tone = if (finish.adaptive) (if (blurSupported) 0xE0161C19.toInt() else 0xF5161C19.toInt()) else finish.fill
+        var tone = if (finish.adaptive) (faceFor(finish, 0xFF1A1F1C.toInt(), false).fill and 0x00FFFFFF) or ((if (blurSupported) 0xE0 else 0xF5) shl 24) else finish.fill
+        var edgeColour = if (finish.adaptive) faceFor(finish, 0xFF1A1F1C.toInt(), false).edge else 0x33D9BB86
         private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
         // One hairline of champagne: the edge of the glass, never a border
         private val edge = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.STROKE; color = 0x33D9BB86; strokeWidth = context.dp(1).toFloat()
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = context.dp(1).toFloat()
         }
         private val r = android.graphics.RectF()
 
@@ -512,6 +532,7 @@ class AppDrawer(
             val a = (t / 0.22f).coerceAtMost(1f)
             val layer = if (a < 1f) canvas.saveLayerAlpha(null, (a * 255).toInt()) else -1
             fill.color = tone
+            edge.color = edgeColour
             canvas.drawPath(path, fill)
             canvas.drawPath(path, edge)
             canvas.save()
@@ -548,6 +569,12 @@ class AppDrawer(
     }
 
     private inner class Adapter(private val finish: Finish, private val iconPx: Int, private val rowH: Int) : RecyclerView.Adapter<Holder>() {
+        /** The labels' ink: follows the panel's face as it adapts. */
+        var ink: Int = if (finish.adaptive) faceFor(finish, 0xFF1A1F1C.toInt(), false).ink else finish.ink
+            set(v) {
+                field = v
+                grid?.let { g -> for (i in 0 until g.childCount) (g.getChildViewHolder(g.getChildAt(i)) as? Holder)?.label?.setTextColor(v) }
+            }
         private var items: List<AppEntry> = emptyList()
 
         @SuppressLint("NotifyDataSetChanged")
@@ -561,7 +588,7 @@ class AppDrawer(
                 textSize = 11.5f
                 typeface = Kit.sans(context, 400)
                 letterSpacing = 0.01f
-                setTextColor(if (finish.adaptive) 0xE6F1EEE6.toInt() else finish.ink)
+                setTextColor(ink)
                 gravity = Gravity.CENTER
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
@@ -582,6 +609,7 @@ class AppDrawer(
             val app = items[position]
             h.icon.setImageDrawable(apps.icon(app.pkg))
             h.label.text = app.label
+            h.label.setTextColor(ink)
             h.label.alpha = labelDetail
             h.itemView.contentDescription = app.label
             h.itemView.setOnClickListener {

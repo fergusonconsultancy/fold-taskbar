@@ -64,6 +64,9 @@ class MainActivity : Activity() {
         screen.add(labelled("Shape", Segmented(this, Shape.entries.map { it.label }, Shape.entries.indexOf(Prefs.shape(this))) {
             Prefs.setShape(this, Shape.entries[it])
         }))
+        screen.add(labelled("Profile", Segmented(this, Profile.entries.map { it.label }, Profile.entries.indexOf(Prefs.profile(this))) {
+            Prefs.setProfile(this, Profile.entries[it])
+        }), px(18))
         screen.add(finishPicker(), px(18))
         val sizes = Prefs.ICON_SIZES
         screen.add(labelled("Icon size", Segmented(this, listOf("Small", "Medium", "Large").take(sizes.size), sizes.indexOf(Prefs.iconDp(this)).coerceAtLeast(0)) {
@@ -140,6 +143,7 @@ class MainActivity : Activity() {
         presenceDetail.text = when (Prefs.presence(this)) {
             Presence.ALWAYS -> "The bar is always there, in full."
             Presence.TRIM -> "The bar rests as a fine line of trim. Touch it and the icons rise around your finger; slide along it and they swell as you pass; lift on one to open it."
+            Presence.RECEDE -> "Concentrato for the bar. While you scroll the app beneath, the bar steps back to a faint presence so what you are reading has the screen, and returns, unhurried, once you stop. Touch it and it is back at once."
         }
     }
 
@@ -204,13 +208,31 @@ class MainActivity : Activity() {
             tiles += tile
             row.addView(tile, LinearLayout.LayoutParams(-2, -2).apply { if (tiles.size > 1) marginStart = px(10) })
         }
+        val detail = text(finishDetail(Prefs.finish(this@MainActivity)), 13.5f, Kit.MUTED).apply { tag = SECONDARY; setPadding(px(4), px(10), 0, 0) }
+        tiles.forEachIndexed { i, t ->
+            val f = Finish.entries[i]
+            t.setOnClickListener { Prefs.setFinish(this@MainActivity, f); paint(); detail.text = finishDetail(f); refresh(); it.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK) }
+        }
         paint()
         addView(HorizontalScrollView(this@MainActivity).apply {
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_NEVER
             addView(row)
         })
+        addView(detail)
     }
+
+    /** One line on each finish's character, under the tiles. The app grid always wears the same. */
+    private fun finishDetail(f: Finish) = when (f) {
+        Finish.SMOKE -> "Smoked glass: dark over light screens, light over dark, with a trace of the colour beneath."
+        Finish.MEMBRANE -> "A thin, living skin: more translucent, taking far more of the colour beneath, as if grown from the app."
+        Finish.ROSSO -> "Alfa red that keeps its contrast: oxblood over bright screens, a brighter rosso over dark."
+        Finish.AVORIO -> "The Giulietta's ivory leather. Always the light one, deepening to warm stone over bright screens; rosso marks the app in use."
+        Finish.CARBONIO -> "Bauhaus restraint. Always the dark one, lifting to charcoal with a brighter edge over dark screens so its outline holds."
+        Finish.CERAMICA -> "Gaudí's glazed tile: each stretch takes the hue beneath and fires it as glaze, pale over dark screens, deep over bright. Over grey, cobalt."
+        Finish.VISCONTI -> "Visconti green with champagne light, the same everywhere."
+        Finish.PAPER -> "Pale paper and green ink, the same everywhere."
+    } + " The app grid wears the same finish."
 
     /** How each finish looks over a bright screen (left) and a dark one (right). */
     private fun finishSwatch(c: Canvas, r: RectF, f: Finish) {
@@ -220,12 +242,10 @@ class MainActivity : Activity() {
         p.color = Color.rgb(22, 30, 40); c.drawRect(mid, r.top, r.right, r.bottom, p)
         val bar = RectF(r.left + r.width() * 0.08f, r.centerY() - r.height() * 0.17f, r.right - r.width() * 0.08f, r.centerY() + r.height() * 0.17f)
         // Each half of the bar takes the face it would show over that half of the screen
-        fun face(overLight: Boolean): Pair<Int, Int> = when (f) {
-            Finish.SMOKE -> if (overLight) 0xDB131815.toInt() to 0xFFEDEAE2.toInt() else 0xE8F0ECE4.toInt() to 0xFF1A201C.toInt()
-            Finish.MEMBRANE -> if (overLight) 0xB8665F52.toInt() to 0xFFF4F1EA.toInt() else 0xC4A3A6AA.toInt() to 0xFF141A16.toInt()
-            Finish.ROSSO -> if (overLight) 0xF26E0A12.toInt() to 0xFFF6F1E6.toInt() else 0xF0B8141E.toInt() to 0xFFF6F1E6.toInt()
-            else -> f.fill to f.ink
-        }
+        // The same faces the bar itself wears (faceFor): over a pale page, then over a dark one
+        fun face(overLight: Boolean): Pair<Int, Int> =
+            if (!f.adaptive) f.fill to f.ink
+            else faceFor(f, if (overLight) 0xFFE2DCCE.toInt() else 0xFF1E2A3A.toInt(), light = !overLight).let { it.fill to it.ink }
         val rad = bar.height() / 2
         for (half in 0..1) {
             val (fill, ink) = face(overLight = half == 0)
@@ -287,6 +307,11 @@ class MainActivity : Activity() {
             "Smoked glass" to "Reads the screen beyond each of eight stretches of the bar. Dark over light content, light over dark, with a trace of the colour underneath.",
             "Membrane" to "Adaptive like smoked glass, but thin and translucent, taking far more of the colour beneath, so the bar seems grown from the app under it. Gaudí's rule: nothing exists in isolation.",
             "Rosso lacquer" to "Alfa red that keeps its contrast: oxblood over bright screens, a brighter rosso over dark ones. Ivory ink and a champagne light throughout.",
+            "Avorio, Carbonio, Ceramica" to "Three more adaptive finishes. Avorio is the Giulietta's ivory leather, always the light one, deepening to warm stone over bright screens, with rosso marking the app in use. Carbonio is Bauhaus restraint, always the dark one, lifting to charcoal with a brighter edge over dark screens so its outline holds. Ceramica is Gaudí's glazed tile: each stretch of the bar fires the hue beneath it as glaze, pale over dark screens and deep over bright.",
+            "One finish, everywhere" to "The app grid wears whatever the bar is wearing, adapted the same way to the screen it opens over. Over a dark screen smoked glass turns to light glass with dark ink in the grid exactly as it does on the bar.",
+            "Profile" to "Round is the capsule, its ends fully rounded. Slim is a lower, flatter slab with tighter corners: Bauhaus in its restraint, giving the screen back a few points.",
+            "Recede" to "A third presence, and Concentrato for the bar. While you scroll the app beneath, the bar steps back to a faint presence, easing a little smaller, so what you are reading has the screen. It returns unhurried once you stop, and at once if you touch it.",
+            "The entrance" to "After an unfold the bar does not simply appear. Once the screen is whole (Fold Motion tells the bar when its reveal has ended) the bar rises a little way from the edge it rests against on a long, soft ease, and its icons settle in from the middle outwards. No bounce: an invitation.",
             "One landing" to "Every switch drawn by the bar lands on one deceleration and stops exactly on the app's own window, pixel for pixel, so the hand-over to the live app is a cut you cannot see. Nothing overshoots and comes back. What you leave recedes into the bar's dark ground as the new app comes forward.",
             "Fuoco and Onda" to "The depth switches. The screen you are leaving falls out of focus behind the arriving app. Fuoco is a focus pull: the app rises soft from the icon and sharpens as it fills the screen. Onda opens as a circle from the icon, its rim a fine meniscus. Cycle within 700ms of the last switch and Concentrato makes each one quicker and shallower.",
             "Lama" to "The Alfa light line as a switch, and the bar's signature. Two points of light race out of the icon along the bar, drawing a fine champagne blade, and the slit opens hard behind them, uncovering the app in place. Each lip carries a thin line of light onto the app and a faint shadow onto the cover. The blade always runs along the bar, wherever it sits.",

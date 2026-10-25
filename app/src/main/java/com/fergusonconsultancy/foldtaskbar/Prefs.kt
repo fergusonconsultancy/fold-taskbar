@@ -42,12 +42,78 @@ enum class Finish(val label: String, val fill: Int, val ink: Int, val edge: Int,
      * ivory ink and a champagne light throughout.
      */
     ROSSO("Rosso lacquer (adaptive)", 0xF0861018.toInt(), 0xFFF6F1E6.toInt(), 0x40D9BB86, 0xFFD9BB86.toInt(), adaptive = true),
+    /**
+     * Avorio (25 Oct 2026): the Giulietta's ivory leather. Always the light one: ivory over dark
+     * screens, deepening to warm stone over bright ones so it never disappears into white. Espresso
+     * ink, and the active app marked in rosso.
+     */
+    AVORIO("Avorio (adaptive)", 0xF0F3ECDD.toInt(), 0xFF2A211A.toInt(), 0x22000000, 0xFF9E1B22.toInt(), adaptive = true),
+    /**
+     * Carbonio (25 Oct 2026): Bauhaus restraint. Always the dark one: graphite over bright screens,
+     * lifting to charcoal with a brighter edge over dark ones so its outline holds. Ivory ink,
+     * champagne light.
+     */
+    CARBONIO("Carbonio (adaptive)", 0xF216181A.toInt(), 0xFFE9E6DF.toInt(), 0x14FFFFFF, 0xFFD3B27C.toInt(), adaptive = true),
+    /**
+     * Ceramica (25 Oct 2026): Gaudí's glazed tile. Each stretch of the bar takes the hue beneath
+     * it and fires it as glaze: a pale glaze over dark screens, a deep one over bright, with a
+     * glaze highlight along the edge. Over grey, Gaudí's cobalt.
+     */
+    CERAMICA("Ceramica (adaptive)", 0xF2264E8C.toInt(), 0xFFF4F1EA.toInt(), 0x40FFFFFF, 0xFFE9CF9E.toInt(), adaptive = true),
     VISCONTI("Visconti", 0xF01A3F31.toInt(), 0xFFEFE6D3.toInt(), 0x73D3B27C, 0xFFD3B27C.toInt()),
     PAPER("Paper", 0xF2F6F4EE.toInt(), 0xFF1D2620.toInt(), 0x14000000, 0xFF1F4A3A.toInt()),
 }
 
+/** One face of a finish: the glass, its ink, its edge and its light. */
+data class Face(val fill: Int, val ink: Int, val edge: Int, val glow: Int)
+
+/**
+ * How [finish] looks over a stretch of screen whose colour is [colour], when the bar should be
+ * the light one ([light], over a dark screen) or the dark one. One definition, shared by the
+ * bar and the app grid, so the grid always wears what the bar is wearing (25 Oct 2026).
+ */
+fun faceFor(finish: Finish, colour: Int, light: Boolean): Face {
+    fun mixWith(base: Int, tint: Float, shift: Int) = ((((base shr shift) and 255) * (1 - tint)) + (((colour shr shift) and 255) * tint)).toInt()
+    fun tinted(base: Int, tint: Float, alpha: Int) = (alpha shl 24) or (mixWith(base, tint, 16) shl 16) or (mixWith(base, tint, 8) shl 8) or mixWith(base, tint, 0)
+    return when (finish) {
+        Finish.MEMBRANE -> if (light) Face(tinted(0xF2EEE6, 0.42f, 0xC4), 0xFF141A16.toInt(), 0x26000000, 0xFF7A5A28.toInt())
+            else Face(tinted(0x0E1210, 0.45f, 0xB8), 0xFFF4F1EA.toInt(), 0x24FFFFFF, 0xFFE2C48E.toInt())
+        Finish.ROSSO -> if (light) Face(tinted(0xB8141E, 0.06f, 0xF0), 0xFFF6F1E6.toInt(), 0x55F6D9A8, 0xFFE9CF9E.toInt())
+            else Face(tinted(0x6E0A12, 0.05f, 0xF2), 0xFFF6F1E6.toInt(), 0x40D9BB86, 0xFFE9CF9E.toInt())
+        Finish.AVORIO -> if (light) Face(tinted(0xF3ECDD, 0.06f, 0xF0), 0xFF2A211A.toInt(), 0x22000000, 0xFF9E1B22.toInt())
+            else Face(tinted(0xCFC3AE, 0.08f, 0xF2), 0xFF231B14.toInt(), 0x33000000, 0xFF8E1820.toInt())
+        Finish.CARBONIO -> if (light) Face(tinted(0x2C2F31, 0.06f, 0xF0), 0xFFF1EEE7.toInt(), 0x40FFFFFF, 0xFFE2C48E.toInt())
+            else Face(tinted(0x16181A, 0.04f, 0xF2), 0xFFE9E6DF.toInt(), 0x14FFFFFF, 0xFFD3B27C.toInt())
+        Finish.CERAMICA -> {
+            val hsv = FloatArray(3).also { android.graphics.Color.colorToHSV(colour, it) }
+            val grey = hsv[1] < 0.08f
+            val h = if (grey) 215f else hsv[0]
+            val s = if (grey) 0.62f else hsv[1].coerceIn(0.45f, 0.72f)
+            val glaze = android.graphics.Color.HSVToColor(0xF2, floatArrayOf(h, if (light) s * 0.55f else s, if (light) 0.86f else 0.34f))
+            if (light) Face(glaze, 0xFF14181A.toInt(), 0x66FFFFFF, 0xFF6E4A16.toInt())
+            else Face(glaze, 0xFFF4F1EA.toInt(), 0x40FFFFFF, 0xFFE9CF9E.toInt())
+        }
+        Finish.SMOKE -> if (light) Face(tinted(0xF4F0E8, 0.10f, 0xE8), 0xFF1A201C.toInt(), 0x1F000000, 0xFF8C6A33.toInt())
+            else Face(tinted(0x101412, 0.14f, 0xDB), 0xFFEDEAE2.toInt(), 0x1AFFFFFF, 0xFFD3B27C.toInt())
+        else -> Face(finish.fill, finish.ink, finish.edge, finish.indicator)
+    }
+}
+
+/** Whether the bar should be the light one over a screen of luminance [lum], with hysteresis around [was]. */
+fun lightOver(lum: Float, was: Boolean?): Boolean = when {
+    lum < 0.36f -> true
+    lum > 0.54f -> false
+    else -> was ?: false
+}
+
 /** How the bar rests (Bellezza Necessaria, principle 3). */
-enum class Presence(val label: String) { ALWAYS("Always"), TRIM("Trim") }
+enum class Presence(val label: String) { ALWAYS("Always"), TRIM("Trim"), RECEDE("Recede") }
+
+/**
+ * The bar's profile (25 Oct 2026). Round: the capsule, ends fully rounded. Slim: a lower, flatter
+ * slab with tighter corners, Bauhaus in its restraint, giving the screen back a few points.
+ */
+enum class Profile(val label: String) { ROUND("Round"), SLIM("Slim") }
 
 /** Every setting and list the bar keeps, in one place. */
 object Prefs {
@@ -164,6 +230,8 @@ object Prefs {
      */
     fun presence(c: Context) = runCatching { Presence.valueOf(of(c).getString("presence", null)!!) }.getOrDefault(Presence.ALWAYS)
     fun setPresence(c: Context, v: Presence) = of(c).edit().putString("presence", v.name).apply()
+    fun profile(c: Context) = runCatching { Profile.valueOf(of(c).getString("profile", null)!!) }.getOrDefault(Profile.ROUND)
+    fun setProfile(c: Context, v: Profile) = of(c).edit().putString("profile", v.name).apply()
 
     /** Membrane: neighbours yield and lean when an app is pressed or lifted out of the bar. */
     fun membrane(c: Context) = of(c).getBoolean("membrane", true)

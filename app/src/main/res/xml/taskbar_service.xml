@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Window events only: the bar needs to know which app is on screen and whether the
-     keyboard is up. It never reads text or content inside apps. The screenshot permission
-     reads the colours just around the bar and tab so they contrast with what is behind
-     them, and keeps a reduced picture of the current app in memory for the Zoom
-     transition. Nothing is saved or sent. -->
+<!-- Window events only by default: which app is on screen and whether the keyboard is up.
+     Scroll events are added at run time only while the Recede presence is chosen. It never
+     reads text or content inside apps. The screenshot permission reads the colours around the
+     bar, and pictures each app for the switching animations; those pictures stay in the app's
+     private storage, are never kept for secure screens, and are never sent anywhere. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"

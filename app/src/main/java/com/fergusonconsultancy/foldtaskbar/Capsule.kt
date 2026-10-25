@@ -45,7 +45,10 @@ class Capsule(
 
     private val gap = context.dp(iconDp * 0.28f)
     private val padX = context.dp(iconDp * 0.32f)
-    private val padY = context.dp(8)
+    private val slim = Prefs.profile(context) == Profile.SLIM
+    private val padY = context.dp(if (slim) 4 else 8)
+    /** Corner radius for a box of this size: fully round ends, or the slim slab's tighter corners. */
+    private fun cornerFor(w: Float, h: Float) = if (slim) minOf(w, h) * 0.26f else minOf(w, h) / 2f
     private val indicators = HashMap<String, View>()
     private val appViews = HashMap<View, String>()
     private val dividers = mutableListOf<View>()
@@ -85,6 +88,27 @@ class Capsule(
         val anchor = if (vertical) loc[1] + first.top + first.height / 2f else loc[0] + first.left + first.width / 2f
         return Lattice(android.graphics.Rect(loc[0], loc[1], loc[0] + width, loc[1] + height), anchor,
             (context.dp(iconDp) + gap).toFloat(), context.dp(iconDp), vertical)
+    }
+
+    /**
+     * The entrance (25 Oct 2026): the icons settle into the glass from the middle outwards, each
+     * rising a few points from the direction the bar arrives from and coming into full view on a
+     * long, gentle ease, so the bar seems to wake and turn towards you. [dx], [dy] point the way
+     * the bar itself travels in.
+     */
+    fun enter(delay: Long, dx: Float, dy: Float) {
+        val kids = (0 until childCount).map { getChildAt(it) }.filter { it.visibility == VISIBLE }
+        if (kids.isEmpty()) return
+        val mid = (kids.size - 1) / 2f
+        val ease = android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)
+        kids.forEachIndexed { i, v ->
+            v.animate().cancel()
+            v.alpha = 0f
+            v.translationX = dx * 0.45f; v.translationY = dy * 0.45f
+            v.animate().alpha(1f).translationX(0f).translationY(0f)
+                .setStartDelay(delay + (kotlin.math.abs(i - mid) * 34f).toLong())
+                .setDuration(460).setInterpolator(ease).start()
+        }
     }
 
     /** Docked against a side edge, the capsule stands upright. */
@@ -244,38 +268,10 @@ class Capsule(
         val f = fills.copyOf(); val i = inks.copyOf(); val e = edges.copyOf(); val g = glows.copyOf()
         for (z in 0 until zones) {
             val (colour, lum) = behind[z] ?: continue
-            val light = when {
-                lum < 0.36f -> true
-                lum > 0.54f -> false
-                else -> lightZone[z] ?: false
-            }
+            val light = lightOver(lum, lightZone[z])
             lightZone[z] = light
-            fun mixWith(base: Int, tint: Float, shift: Int) = ((((base shr shift) and 255) * (1 - tint)) + (((colour shr shift) and 255) * tint)).toInt()
-            fun tinted(base: Int, tint: Float, alpha: Int) = (alpha shl 24) or (mixWith(base, tint, 16) shl 16) or (mixWith(base, tint, 8) shl 8) or mixWith(base, tint, 0)
-            when (finish) {
-                Finish.MEMBRANE -> {
-                    // A thin skin: more translucent, and far more of the colour beneath it
-                    f[z] = if (light) tinted(0xF2EEE6, 0.42f, 0xC4) else tinted(0x0E1210, 0.45f, 0xB8)
-                    i[z] = if (light) 0xFF141A16.toInt() else 0xFFF4F1EA.toInt()
-                    e[z] = if (light) 0x26000000 else 0x24FFFFFF
-                    g[z] = if (light) 0xFF7A5A28.toInt() else 0xFFE2C48E.toInt()
-                }
-                Finish.ROSSO -> {
-                    // Alfa red that keeps its contrast: oxblood over bright screens, bright rosso over dark
-                    f[z] = if (light) tinted(0xB8141E, 0.06f, 0xF0) else tinted(0x6E0A12, 0.05f, 0xF2)
-                    i[z] = 0xFFF6F1E6.toInt()
-                    e[z] = if (light) 0x55F6D9A8 else 0x40D9BB86
-                    g[z] = 0xFFE9CF9E.toInt()
-                }
-                else -> {
-                    val base = if (light) 0xF4F0E8 else 0x101412
-                    val tint = if (light) 0.10f else 0.14f
-                    f[z] = tinted(base, tint, if (light) 0xE8 else 0xDB)
-                    i[z] = if (light) 0xFF1A201C.toInt() else 0xFFEDEAE2.toInt()
-                    e[z] = if (light) 0x1F000000 else 0x1AFFFFFF
-                    g[z] = if (light) 0xFF8C6A33.toInt() else 0xFFD3B27C.toInt()
-                }
-            }
+            val face = faceFor(finish, colour, light)
+            f[z] = face.fill; i[z] = face.ink; e[z] = face.edge; g[z] = face.glow
         }
         toneTo(f, i, e, g)
     }
@@ -339,7 +335,7 @@ class Capsule(
                 if (vertical) { val cx = r.centerX(); val half = (r.width() / 2f) + (thin / 2f - r.width() / 2f) * rest; r.left = cx - half; r.right = cx + half; val inset = r.height() * 0.18f * rest; r.top += inset; r.bottom -= inset }
                 else { val cy = r.centerY(); val half = (r.height() / 2f) + (thin / 2f - r.height() / 2f) * rest; r.top = cy - half; r.bottom = cy + half; val inset = r.width() * 0.18f * rest; r.left += inset; r.right -= inset }
             }
-            val radius = minOf(r.width(), r.height()) / 2f
+            val radius = cornerFor(r.width(), r.height())
             val x1 = if (vertical) r.left else r.right
             val y1 = if (vertical) r.bottom else r.top
             fillPaint.shader = android.graphics.LinearGradient(r.left, r.top, x1, y1, fills, stops, android.graphics.Shader.TileMode.CLAMP)
@@ -357,7 +353,7 @@ class Capsule(
         override fun getOutline(outline: android.graphics.Outline) {
             val b = bounds
             if (rest > 0.02f) { outline.setEmpty(); return }
-            outline.setRoundRect(b, minOf(b.width(), b.height()) / 2f)
+            outline.setRoundRect(b, cornerFor(b.width().toFloat(), b.height().toFloat()))
         }
     }
 
