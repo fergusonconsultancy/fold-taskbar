@@ -149,7 +149,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     /** Plays the pour from [source] (an icon on screen) over [screen]. */
-    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, look: Look? = null, concentrato: Boolean = true, land: Rect? = null, barAcross: Boolean = true) {
+    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, look: Look? = null, concentrato: Boolean = true, land: Rect? = null, barAcross: Boolean = true, softPicture: Bitmap? = null) {
         // Fanale, Membrana and Zoom were retired from the bar on 25 Oct 2026
         this.look = look ?: Look.LAMA
         this.lamp = false
@@ -186,7 +186,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         animate().cancel()
         alpha = 1f
         t = 0f
-        soft?.recycle(); soft = if (this.look == Look.FUOCO && !quick) makeSoft(picture) else null
+        // The soft copy belongs to the bar's picture cache: borrowed, never recycled here
+        soft = if (this.look == Look.FUOCO && !quick) softPicture?.takeIf { !it.isRecycled } else null
         setBehindBlur(0f)
         travelled = false
         appHere = false
@@ -233,7 +234,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             .setUpdateListener(null)
             .withEndAction {
                 setBehindBlur(0f); setRenderEffect(null); visibility = INVISIBLE; picture = null; icon = null
-                soft?.recycle(); soft = null; backdrop?.recycle(); backdrop = null; softBack?.recycle(); softBack = null
+                soft = null; backdrop?.recycle(); backdrop = null; softBack?.recycle(); softBack = null
             }
             .start()
     }
@@ -435,15 +436,15 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private val backDst = RectF()
 
     /** Hands over the picture of the screen being left ([shot] covers [area], in screen pixels); null if none could be had. */
-    fun setBackdrop(shot: Bitmap?, area: Rect?) {
-        if (visibility != VISIBLE) { shot?.recycle(); return }
+    fun setBackdrop(shot: Bitmap?, area: Rect?, softShot: Bitmap? = null) {
+        if (visibility != VISIBLE) { shot?.recycle(); softShot?.recycle(); return }
         backdrop?.recycle(); softBack?.recycle(); softBack = null
         backdrop = shot
         if (shot == null || area == null) { coverOpaque = true; coverAt = android.os.SystemClock.uptimeMillis(); coverFrom = veilLevel(); invalidate(); return }
         val mine = IntArray(2).also { getLocationOnScreen(it) }
         backDst.set((area.left - mine[0]).toFloat(), (area.top - mine[1]).toFloat(), (area.right - mine[0]).toFloat(), (area.bottom - mine[1]).toFloat())
         // Fuoco and Onda: the screen you leave falls out of focus (drawn, not a window blur, so it costs nothing per frame)
-        if ((look == Look.FUOCO || look == Look.ONDA) && !quick) softBack = makeSoft(shot)
+        if ((look == Look.FUOCO || look == Look.ONDA) && !quick) softBack = softShot else softShot?.recycle()
         invalidate()
     }
 

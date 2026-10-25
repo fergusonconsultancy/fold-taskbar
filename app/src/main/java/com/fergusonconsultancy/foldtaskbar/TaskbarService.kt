@@ -92,6 +92,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private val snapshots = object : LinkedHashMap<String, Bitmap>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 8
     }
+    /** Each picture's soft copy, for Fuoco's focus pull and depth: made once, off the main thread. */
+    private val softs = object : LinkedHashMap<String, Bitmap>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 8
+    }
 
     /** Where each picture's window was on screen when it was taken, so a switch lands exactly on it. */
     private val snapshotBounds = HashMap<String, Rect>()
@@ -106,6 +110,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
         Prefs.offerFanale(this)
+        preloadPictures()
         guide = DragGuide(this, wm)
         getSystemService(android.hardware.SensorManager::class.java)?.let { sm ->
             sm.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE)?.let { sm.registerListener(this, it, android.hardware.SensorManager.SENSOR_DELAY_UI, main) }
@@ -794,17 +799,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                             full.recycle()
                             val tones = capsuleRects.map { (i, r) -> i to zonesAround(soft, r, ring, step) }
                             val tabTone = tabR?.let { averageAround(soft, it, ring, step) }
-                            val picture = snapPkg?.let { pkg ->
-                                val w = 540
-                                val small = Bitmap.createScaledBitmap(soft, w, (w * soft.height / soft.width.toFloat()).toInt(), true)
-                                // A private screen (banking, passwords) comes back black: never keep those
-                                if (isBlank(small)) { small.recycle(); null } else pkg to small
-                            }
+                            snapPkg?.let { pkg -> storePicture(pkg, soft, null) }
                             soft.recycle()
                             main.post {
                                 tones.forEach { (i, z) -> capsules.getOrNull(i)?.adaptTo(z) }
                                 tabTone?.let { (_, lum) -> tab?.setBackdropLight(lum > 0.5f) }
-                                picture?.let { (pkg, bmp) -> snapshots[pkg] = bmp; snapshotBounds.remove(pkg); snapshotAt[pkg] = SystemClock.uptimeMillis() }
                             }
                         }
                         hb.close()
@@ -830,9 +829,63 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
      */
     private fun snapshotFile(pkg: String) = java.io.File(java.io.File(cacheDir, "switch").apply { mkdirs() }, "$pkg.jpg")
 
+    /**
+     * 25 Oct 2026: pictures were kept 540 pixels wide and stretched across a screen four times
+     * that, so every switch looked soft until the live app took over. Now they are kept at three
+     * quarters of the screen's own resolution, as hardware bitmaps (they live in graphics memory
+     * and draw on the first frame with no upload, so sharpness costs the motion nothing), with
+     * a small soft copy made here, once, for Fuoco. Runs on the worker thread; [full] is not kept.
+     */
+    private fun storePicture(pkg: String, full: Bitmap, bounds: Rect?) {
+        runCatching {
+            val w = (full.width * 0.75f).toInt().coerceAtLeast(1)
+            val h = (full.height * 0.75f).toInt().coerceAtLeast(1)
+            val sharp = Bitmap.createScaledBitmap(full, w, h, true)
+            // A private screen (banking, passwords) comes back black: never keep those
+            if (isBlank(sharp)) { if (sharp !== full) sharp.recycle(); return }
+            keepSnapshot(pkg, sharp, bounds)
+            val hw = sharp.copy(Bitmap.Config.HARDWARE, false) ?: sharp
+            val soft = softCopy(sharp)
+            if (hw !== sharp && sharp !== full) sharp.recycle()
+            main.post {
+                snapshots[pkg] = hw
+                soft?.let { softs[pkg] = it }
+                if (bounds != null) snapshotBounds[pkg] = bounds else snapshotBounds.remove(pkg)
+                snapshotAt[pkg] = SystemClock.uptimeMillis()
+            }
+        }
+    }
+
+    /** A soft copy of [b]: shrunk hard and drawn back up with filtering, as a hardware bitmap. */
+    private fun softCopy(b: Bitmap): Bitmap? = runCatching {
+        val small = Bitmap.createScaledBitmap(b, (b.width / 14).coerceAtLeast(2), (b.height / 14).coerceAtLeast(2), true)
+        val back = Bitmap.createScaledBitmap(small, (b.width / 3).coerceAtLeast(2), (b.height / 3).coerceAtLeast(2), true)
+        small.recycle()
+        back.copy(Bitmap.Config.HARDWARE, false)?.also { back.recycle() } ?: back
+    }.getOrNull()
+
+    /** Loads the kept pictures once at start, off the main thread, so no switch waits on a decode. */
+    private fun preloadPictures() {
+        bg.post {
+            val files = java.io.File(cacheDir, "switch").listFiles()?.sortedByDescending { it.lastModified() }?.take(8) ?: return@post
+            val prefs = getSharedPreferences("switch_pictures", MODE_PRIVATE)
+            for (f in files.reversed()) runCatching {
+                val pkg = f.name.removeSuffix(".jpg")
+                val sw = android.graphics.BitmapFactory.decodeFile(f.path) ?: return@runCatching
+                val hw = sw.copy(Bitmap.Config.HARDWARE, false) ?: sw
+                val soft = softCopy(sw)
+                if (hw !== sw) sw.recycle()
+                val bounds = prefs.getString(pkg, null)?.let { Rect.unflattenFromString(it) }
+                main.post {
+                    if (pkg !in snapshots) { snapshots[pkg] = hw; soft?.let { softs[pkg] = it }; bounds?.let { snapshotBounds[pkg] = it } }
+                }
+            }
+        }
+    }
+
     private fun keepSnapshot(pkg: String, bmp: Bitmap, bounds: Rect?) {
         runCatching {
-            snapshotFile(pkg).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+            snapshotFile(pkg).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
             getSharedPreferences("switch_pictures", MODE_PRIVATE).edit()
                 .putString(pkg, bounds?.flattenToString()).apply()
         }
@@ -864,12 +917,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                             // A hardware bitmap cannot be drawn in software: copy it first, then reduce
                             val soft = full.copy(Bitmap.Config.ARGB_8888, false)
                             full.recycle()
-                            val w = 540
-                            val small = Bitmap.createScaledBitmap(soft, w, (w * soft.height / soft.width.toFloat()).toInt().coerceAtLeast(1), true)
-                            if (small !== soft) soft.recycle()
-                            // A private screen (banking, passwords) comes back black: never keep those
-                            if (isBlank(small)) small.recycle()
-                            else { keepSnapshot(pkg, small, bounds); main.post { snapshots[pkg] = small; snapshotBounds[pkg] = bounds; snapshotAt[pkg] = SystemClock.uptimeMillis() } }
+                            storePicture(pkg, soft, bounds)
+                            soft.recycle()
                         }
                         hb.close()
                     }
@@ -1026,6 +1075,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
      * composed at half size in their stacking order. Calls [done] once, on the main thread,
      * within 140ms at most; with no picture (older Android, or refused) it passes nulls.
      */
+    private var backdropSoft: Bitmap? = null
+
     private fun captureLeaving(done: (Bitmap?, Rect?) -> Unit) {
         var finished = false
         fun finish(b: Bitmap?, r: Rect?) { if (finished) { b?.recycle(); return }; finished = true; done(b, r) }
@@ -1038,7 +1089,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         main.postDelayed({ finish(null, null) }, 140)
         val shots = arrayOfNulls<Pair<Bitmap, Rect>>(wins.size)
         var pending = wins.size
-        val scale = 0.5f
+        val scale = 0.75f
         fun compose() {
             bg.post {
                 val out = runCatching {
@@ -1054,7 +1105,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                     }
                     b
                 }.getOrNull()
-                main.post { if (out != null) finish(out, area) else finish(null, null) }
+                val soft = out?.let { softCopy(it) }
+                val hw = out?.let { o -> o.copy(Bitmap.Config.HARDWARE, false)?.also { o.recycle() } ?: o }
+                main.post { if (hw != null) { backdropSoft = soft; finish(hw, area) } else { soft?.recycle(); finish(null, null) } }
             }
         }
         wins.forEachIndexed { i, w ->
@@ -1195,18 +1248,18 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (onScreen.size == 1 && onScreen.first() == pkg) { closePanels(); return }
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
-        val pic = snapshots[pkg] ?: loadSnapshot(pkg)
+        val pic = snapshots[pkg]
         val motion = Prefs.motion(this)
         val look = motion.look
         // The bar's motion goes up first, on this frame, so the quietly launched app appears
         // underneath it and is never seen arriving on its own
         val across = hosts.firstOrNull { it.visibility == View.VISIBLE && it.width > 0 }?.let { it.width >= it.height } ?: true
         val drawn = look != null && source != null && source.isAttachedToWindow && isMainScreen() &&
-            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), look = look, concentrato = Prefs.concentrato(this), land = snapshotBounds[pkg], barAcross = across) }
+            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), look = look, concentrato = Prefs.concentrato(this), land = snapshotBounds[pkg], barAcross = across, softPicture = softs[pkg]) }
                 .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }.isSuccess
         // The screen being left is pictured first and held under the motion; only then does the
         // new app launch beneath it, so it is never glimpsed early (see Pour.setBackdrop)
-        if (drawn) captureLeaving { shot, area -> pour.setBackdrop(shot, area); apps.openQuiet(pkg) }
+        if (drawn) captureLeaving { shot, area -> pour.setBackdrop(shot, area, backdropSoft); backdropSoft = null; apps.openQuiet(pkg) }
         else apps.open(pkg, source, pic)
         closePanels()
         if (Prefs.autoHide(this) && revealed) {
