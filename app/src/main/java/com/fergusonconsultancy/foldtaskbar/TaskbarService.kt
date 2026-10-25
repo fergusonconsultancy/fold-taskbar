@@ -1022,6 +1022,67 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     /**
+     * Pictures the screen being left: every app window on screen (never the bar or the grid),
+     * composed at half size in their stacking order. Calls [done] once, on the main thread,
+     * within 140ms at most; with no picture (older Android, or refused) it passes nulls.
+     */
+    private fun captureLeaving(done: (Bitmap?, Rect?) -> Unit) {
+        var finished = false
+        fun finish(b: Bitmap?, r: Rect?) { if (finished) { b?.recycle(); return }; finished = true; done(b, r) }
+        val area = Rect(screen())
+        if (android.os.Build.VERSION.SDK_INT < 34) { finish(null, null); return }
+        val wins = runCatching { windows }.getOrDefault(emptyList())
+            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            .sortedBy { it.layer }
+        if (wins.isEmpty()) { finish(null, null); return }
+        main.postDelayed({ finish(null, null) }, 140)
+        val shots = arrayOfNulls<Pair<Bitmap, Rect>>(wins.size)
+        var pending = wins.size
+        val scale = 0.5f
+        fun compose() {
+            bg.post {
+                val out = runCatching {
+                    val b = Bitmap.createBitmap((area.width() * scale).toInt().coerceAtLeast(1), (area.height() * scale).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                    val c = android.graphics.Canvas(b)
+                    c.drawColor(android.graphics.Color.BLACK)
+                    val p = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+                    for (s in shots) {
+                        val (bmp, r) = s ?: continue
+                        val dst = android.graphics.RectF((r.left - area.left) * scale, (r.top - area.top) * scale, (r.right - area.left) * scale, (r.bottom - area.top) * scale)
+                        c.drawBitmap(bmp, null, dst, p)
+                        bmp.recycle()
+                    }
+                    b
+                }.getOrNull()
+                main.post { if (out != null) finish(out, area) else finish(null, null) }
+            }
+        }
+        wins.forEachIndexed { i, w ->
+            val r = Rect().also { w.getBoundsInScreen(it) }
+            val ok = runCatching {
+                takeScreenshotOfWindow(w.id, mainExecutor, object : TakeScreenshotCallback {
+                    override fun onSuccess(result: ScreenshotResult) {
+                        val hb = result.hardwareBuffer
+                        // Copied off the main thread: a full-screen copy would cost the motion a frame
+                        bg.post {
+                            val soft = runCatching {
+                                Bitmap.wrapHardwareBuffer(hb, result.colorSpace)?.let { hw ->
+                                    val half = Bitmap.createScaledBitmap(hw.copy(Bitmap.Config.ARGB_8888, false), (hw.width * scale).toInt().coerceAtLeast(1), (hw.height * scale).toInt().coerceAtLeast(1), true)
+                                    hw.recycle(); half
+                                }
+                            }.getOrNull()
+                            hb.close()
+                            main.post { shots[i] = soft?.let { it to r }; if (--pending == 0) compose() }
+                        }
+                    }
+                    override fun onFailure(errorCode: Int) { if (--pending == 0) compose() }
+                })
+            }.isSuccess
+            if (!ok && --pending == 0) compose()
+        }
+    }
+
+    /**
      * The picture hands over only once the app has really drawn its screen: a window with
      * content, not the splash a cold start shows first. Checked each frame, for up to 700ms.
      */
@@ -1139,10 +1200,14 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val look = motion.look
         // The bar's motion goes up first, on this frame, so the quietly launched app appears
         // underneath it and is never seen arriving on its own
+        val across = hosts.firstOrNull { it.visibility == View.VISIBLE && it.width > 0 }?.let { it.width >= it.height } ?: true
         val drawn = look != null && source != null && source.isAttachedToWindow && isMainScreen() &&
-            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), look = look, concentrato = Prefs.concentrato(this), land = snapshotBounds[pkg]) }
+            runCatching { pour.play(source, screen(), pic, apps.icon(pkg), look = look, concentrato = Prefs.concentrato(this), land = snapshotBounds[pkg], barAcross = across) }
                 .onFailure { EventLog.add(this, "Pour motion failed: ${it.javaClass.simpleName}") }.isSuccess
-        if (drawn) apps.openQuiet(pkg) else apps.open(pkg, source, pic)
+        // The screen being left is pictured first and held under the motion; only then does the
+        // new app launch beneath it, so it is never glimpsed early (see Pour.setBackdrop)
+        if (drawn) captureLeaving { shot, area -> pour.setBackdrop(shot, area); apps.openQuiet(pkg) }
+        else apps.open(pkg, source, pic)
         closePanels()
         if (Prefs.autoHide(this) && revealed) {
             main.removeCallbacks(autoHideNow)

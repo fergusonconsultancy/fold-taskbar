@@ -270,17 +270,6 @@ class MainActivity : Activity() {
                 c.restore()
                 p.color = Color.rgb(70, 86, 78); c.drawRoundRect(icon, 6f, 6f, p)
             }
-            Motion.MEMBRANA -> {
-                val path = android.graphics.Path()
-                val b = win.width() * 0.12f
-                path.moveTo(win.left, win.top)
-                path.quadTo(win.centerX(), win.top + b, win.right, win.top)
-                path.quadTo(win.right - b * 0.4f, win.centerY(), win.right, win.bottom)
-                path.quadTo(win.centerX(), win.bottom - b, win.left, win.bottom)
-                path.quadTo(win.left + b, win.centerY(), win.left, win.top)
-                p.color = Color.rgb(88, 104, 96); c.drawPath(path, p)
-                p.style = Paint.Style.STROKE; p.strokeWidth = 1.6f; p.color = Kit.CHAMPAGNE; c.drawPath(path, p); p.style = Paint.Style.FILL
-            }
             else -> {
                 p.color = Color.rgb(88, 104, 96)
                 c.drawRoundRect(win, 8f, 8f, p)
@@ -299,13 +288,12 @@ class MainActivity : Activity() {
             "Membrane" to "Adaptive like smoked glass, but thin and translucent, taking far more of the colour beneath, so the bar seems grown from the app under it. Gaudí's rule: nothing exists in isolation.",
             "Rosso lacquer" to "Alfa red that keeps its contrast: oxblood over bright screens, a brighter rosso over dark ones. Ivory ink and a champagne light throughout.",
             "One landing" to "Every switch drawn by the bar lands on one deceleration and stops exactly on the app's own window, pixel for pixel, so the hand-over to the live app is a cut you cannot see. Nothing overshoots and comes back. What you leave recedes into the bar's dark ground as the new app comes forward.",
-            "Fuoco and Onda" to "The depth switches. Whatever you are leaving falls out of focus behind the arriving app and returns as it settles. Fuoco is a focus pull: the app rises soft from the icon and sharpens as it fills the screen. Onda opens as a circle from the icon, its rim a fine meniscus. Cycle within 700ms of the last switch and Concentrato makes each one quicker and shallower.",
-            "Lama" to "The Alfa light line as a switch. Two points of light race out of the icon in opposite directions, drawing a blade of champagne light along the bar to the screen's edges, and the app is uncovered from it as the slit widens. Each lip is a fine line of light falling onto the app it uncovers, with a soft shadow on its other side, so the cover reads as a thin sheet with an edge. Nothing flies and nothing scales.",
+            "Fuoco and Onda" to "The depth switches. The screen you are leaving falls out of focus behind the arriving app. Fuoco is a focus pull: the app rises soft from the icon and sharpens as it fills the screen. Onda opens as a circle from the icon, its rim a fine meniscus. Cycle within 700ms of the last switch and Concentrato makes each one quicker and shallower.",
+            "Lama" to "The Alfa light line as a switch, and the bar's signature. Two points of light race out of the icon along the bar, drawing a fine champagne blade, and the slit opens hard behind them, uncovering the app in place. Each lip carries a thin line of light onto the app and a faint shadow onto the cover. The blade always runs along the bar, wherever it sits.",
             "No colour blocks" to "Until the bar has a picture of an app, its motion is carried by light over the bar's own dark glass, never a block of the app's colour. Pictures are kept privately in the app's own storage, so they survive a restart; secure screens such as banking apps are never kept.",
-            "Zoom, Reveal, Grow" to "Now drawn by the bar, because One UI ignored Android's classic launch animations and played its own task switch for all three. Zoom: the icon's artwork swells and gives way to the app. Reveal: nothing scales; a window widens from the icon and uncovers the app in place. Grow: the whole app at its true proportions scales up out of the icon.",
-            "No friction" to "Every motion but System launches the app with Android's own animation switched off, so nothing plays underneath the bar's motion and nothing is still settling when it hands over. The hand-over waits until the app has drawn its real screen, never its splash.",
+            "Reveal and Grow" to "Drawn by the bar, because One UI ignores Android's classic launch animations and plays its own task switch. Reveal: nothing scales; a window widens from the icon and uncovers the app in place. Grow: the whole app at its true proportions scales up out of the icon.",
+            "No friction" to "Every motion but System launches the app with Android's own animation switched off. The instant you tap, the screen you are leaving is pictured and held still under the motion, so the new app is never glimpsed before its moment, and the hand-over waits until the app has drawn its real screen, never its splash.",
             "The active-app pill" to "Adaptive. It reads the glass beneath it, zone by zone, and takes whichever tone stands out: light champagne with a soft glow and a dark ring over dark glass, deep bronze with a light ring over light glass. It is a little longer and thicker than before, and it still travels between apps as a liquid.",
-            "Membrana" to "The app arrives as a membrane. Each edge is held at its corners and bows against its own speed, so every curve on screen is a measure of speed. As it lands the curves relax and it snaps taut, with a fine champagne meniscus.",
             "Two handles" to "With the hinge pair, each half has its own handle: the grid button and a grip of six dots. Hold either and slide to move that half alone.",
         )
         val GUIDE = listOf(
