@@ -68,6 +68,12 @@ interface GridDrag {
 }
 
 /** Motion curves from the charter: open lands gently, close leaves quickly. */
+/**
+ * The bar's lattice: its capsule on screen, the centre of its first icon along its length,
+ * the distance from one icon to the next, the icon size, and whether it stands upright.
+ */
+data class Lattice(val bar: android.graphics.Rect, val anchor: Float, val pitch: Float, val iconPx: Int, val vertical: Boolean)
+
 object Curves {
     val OPEN = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
     val CLOSE = PathInterpolator(0.3f, 0f, 0.8f, 0.15f)
@@ -160,9 +166,9 @@ class AppDrawer(
 
     /** Builds the windows for this size and finish. Cheap to call: does nothing if unchanged. */
     /** [rect] is where the panel sits on screen; [side] is its edge facing the bar. */
-    fun attach(finish: Finish, rect: android.graphics.Rect, side: Side): Boolean {
+    fun attach(finish: Finish, rect: android.graphics.Rect, side: Side, lat: Lattice? = null): Boolean {
         val widthPx = rect.width(); val heightPx = rect.height()
-        val k = "$finish|$rect|$side"
+        val k = "$finish|$rect|$side|$lat"
         if (k == key && panelHost != null) return false
         detach()
         key = k
@@ -178,9 +184,38 @@ class AppDrawer(
         wm.addView(scrim, params(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, Gravity.TOP, 0))
 
         val pad = context.dp(22)
-        val cell = context.dp(92)
-        val columns = ((widthPx - pad * 2) / cell).coerceIn(4, 8)
-        adapter = Adapter(finish)
+        // Aligned to the bar (25 Oct 2026): the grid uses the bar's own icon size, and its
+        // columns (or, beside an upright bar, its rows) sit on the bar's lattice, so every icon
+        // in the grid lines up with icons on the bar. A cell spans as many of the bar's steps as
+        // its label needs; the eyebrow lines up with the first column's icon.
+        val iconPx = lat?.iconPx ?: context.dp(52)
+        val titleH = context.dp(40)
+        var columns: Int
+        var padStart = pad; var padEnd = pad; var padTop = 0
+        var rowH = iconPx + context.dp(40)
+        var cellW: Float
+        if (lat != null && !lat.vertical) {
+            val stride = kotlin.math.ceil(context.dp(72) / lat.pitch).toInt().coerceAtLeast(1)
+            cellW = stride * lat.pitch
+            val k0 = kotlin.math.ceil((rect.left + cellW / 2f - lat.anchor) / lat.pitch)
+            val c0 = lat.anchor + k0 * lat.pitch
+            padStart = (c0 - cellW / 2f - rect.left).toInt().coerceAtLeast(0)
+            columns = ((widthPx - padStart) / cellW).toInt().coerceAtLeast(3)
+            padEnd = (widthPx - padStart - columns * cellW).toInt().coerceAtLeast(0)
+        } else {
+            cellW = context.dp(92).toFloat()
+            columns = ((widthPx - pad * 2) / cellW).toInt().coerceIn(4, 8)
+            if (lat != null) {
+                val stride = kotlin.math.ceil((iconPx + context.dp(38)) / lat.pitch).toInt().coerceAtLeast(1)
+                rowH = (stride * lat.pitch).toInt()
+                // Each row's icon centre sits on one of the bar's icon centres
+                val gridTop = rect.top + titleH
+                val iconMid = context.dp(8) + iconPx / 2f
+                val k0 = kotlin.math.ceil((gridTop + iconMid - lat.anchor) / lat.pitch)
+                padTop = (lat.anchor + k0 * lat.pitch - iconMid - gridTop).toInt().coerceAtLeast(0)
+            }
+        }
+        adapter = Adapter(finish, iconPx, rowH)
         grid = RecyclerView(context).apply {
             layoutManager = GridLayoutManager(context, columns)
             // Concentrato: the faster the grid is flung, the more its labels fall away, leaving
@@ -212,11 +247,13 @@ class AppDrawer(
             setHasFixedSize(true)
             setItemViewCacheSize(columns * 2)
             addOnItemTouchListener(dragOut)
+            setPadding(padStart, padTop, padEnd, pad)
+            clipToPadding = false
         }
         panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            // The glass is drawn by the liquid around it
-            setPadding(pad, pad, pad, pad)
+            // The glass is drawn by the liquid around it; the grid carries its own side padding
+            setPadding(0, context.dp(18), 0, 0)
             // The doctrine's eyebrow: small champagne capitals, widely spaced
             addView(TextView(context).apply {
                 text = "ALL APPS"
@@ -224,7 +261,9 @@ class AppDrawer(
                 typeface = Kit.sans(context, 500)
                 letterSpacing = 0.18f
                 setTextColor(Kit.CHAMPAGNE)
-                setPadding(context.dp(8), context.dp(4), 0, context.dp(16))
+                // Lined up with the first column's icon
+                setPadding(padStart + ((cellW - iconPx) / 2f).toInt(), 0, 0, context.dp(4))
+                minHeight = titleH - context.dp(18)
             }.also { title = it })
             addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
@@ -508,7 +547,7 @@ class AppDrawer(
         layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
     }
 
-    private inner class Adapter(private val finish: Finish) : RecyclerView.Adapter<Holder>() {
+    private inner class Adapter(private val finish: Finish, private val iconPx: Int, private val rowH: Int) : RecyclerView.Adapter<Holder>() {
         private var items: List<AppEntry> = emptyList()
 
         @SuppressLint("NotifyDataSetChanged")
@@ -517,7 +556,7 @@ class AppDrawer(
         override fun getItemCount() = items.size
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
-            val icon = ImageView(context).apply { layoutParams = LinearLayout.LayoutParams(context.dp(52), context.dp(52)) }
+            val icon = ImageView(context).apply { layoutParams = LinearLayout.LayoutParams(iconPx, iconPx) }
             val label = TextView(context).apply {
                 textSize = 11.5f
                 typeface = Kit.sans(context, 400)
@@ -531,8 +570,9 @@ class AppDrawer(
             val cell = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
-                setPadding(0, context.dp(8), 0, context.dp(14))
-                layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT)
+                setPadding(0, context.dp(8), 0, 0)
+                // Every row the same height, so rows keep the bar's rhythm
+                layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, rowH)
                 addView(icon); addView(label)
             }
             return Holder(cell, icon, label)

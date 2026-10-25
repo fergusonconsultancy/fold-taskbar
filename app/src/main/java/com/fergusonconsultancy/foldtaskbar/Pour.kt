@@ -431,6 +431,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private var softBack: Bitmap? = null
     private var coverOpaque = false
     private var coverAt = 0L
+    private var backAt = 0L
+    private val backPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private var coverFrom = 0f
     private val backSrc = Rect()
     private val backDst = RectF()
@@ -440,6 +442,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         if (visibility != VISIBLE) { shot?.recycle(); softShot?.recycle(); return }
         backdrop?.recycle(); softBack?.recycle(); softBack = null
         backdrop = shot
+        backAt = android.os.SystemClock.uptimeMillis()
         if (shot == null || area == null) { coverOpaque = true; coverAt = android.os.SystemClock.uptimeMillis(); coverFrom = veilLevel(); invalidate(); return }
         val mine = IntArray(2).also { getLocationOnScreen(it) }
         backDst.set((area.left - mine[0]).toFloat(), (area.top - mine[1]).toFloat(), (area.right - mine[0]).toFloat(), (area.bottom - mine[1]).toFloat())
@@ -453,7 +456,11 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private fun drawBackdrop(canvas: Canvas) {
         val b = backdrop ?: return
         backSrc.set(0, 0, b.width, b.height)
-        canvas.drawBitmap(b, backSrc, backDst, null)
+        // Fades in over 90ms: identical to the live screen, so unseen, except where the grid was
+        val k = smooth((android.os.SystemClock.uptimeMillis() - backAt) / 90f)
+        backPaint.alpha = (255 * k).toInt()
+        canvas.drawBitmap(b, backSrc, backDst, backPaint)
+        if (k < 1f) postInvalidateOnAnimation()
         val sb = softBack ?: return
         val f = smooth(t / 0.3f)
         if (f > 0.01f) { paint.alpha = (255 * f).toInt(); canvas.drawBitmap(sb, null, backDst, paint); paint.alpha = 255 }
