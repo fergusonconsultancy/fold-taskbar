@@ -72,7 +72,7 @@ import android.view.animation.PathInterpolator
  * uncovered from it, the slit widening into the whole screen. Nothing flies or scales: the app is
  * already in place and the light simply opens it.
  */
-enum class Look { MEMBRANA, FUOCO, ONDA, LAMA, ZOOM, REVEAL, GROW }
+enum class Look { FUOCO, ONDA, LAMA, REVEAL, GROW }
 
 @SuppressLint("ViewConstructor")
 class Pour(context: Context, private val wm: WindowManager) : View(context) {
@@ -87,9 +87,11 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     private var running: Animator? = null
     private var lamp = false
     private var membrane = false
-    private var look = Look.MEMBRANA
+    private var look = Look.LAMA
     private var quick = false
     private var lastPlayAt = 0L
+    /** The bar lies across the screen (true) or stands upright at a side (false). */
+    private var barAcross = true
     private var concentrato = true
     private val tile = RectF()
     private val tileSrc = Rect()
@@ -147,11 +149,14 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     /** Plays the pour from [source] (an icon on screen) over [screen]. */
-    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, lamp: Boolean = false, membrane: Boolean = false, look: Look? = null, concentrato: Boolean = true, land: Rect? = null) {
-        // Fanale was retired from the bar on 25 Oct 2026; its lamp drawing stays dormant
-        this.look = look ?: Look.MEMBRANA
+    fun play(source: View, screen: Rect, snapshot: Bitmap?, appIcon: Drawable?, look: Look? = null, concentrato: Boolean = true, land: Rect? = null, barAcross: Boolean = true) {
+        // Fanale, Membrana and Zoom were retired from the bar on 25 Oct 2026
+        this.look = look ?: Look.LAMA
         this.lamp = false
-        this.membrane = this.look == Look.MEMBRANA
+        this.membrane = false
+        this.barAcross = barAcross
+        backdrop?.recycle(); backdrop = null; softBack?.recycle(); softBack = null
+        coverOpaque = false
         this.concentrato = concentrato
         val now = android.os.SystemClock.uptimeMillis()
         quick = concentrato && now - lastPlayAt < 700
@@ -182,8 +187,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         alpha = 1f
         t = 0f
         soft?.recycle(); soft = if (this.look == Look.FUOCO && !quick) makeSoft(picture) else null
-        // Depth for Fuoco and Onda: the screen behind defocuses, set once (see depthFrame)
-        setBehindBlur(if (this.look == Look.FUOCO || this.look == Look.ONDA) context.dp(if (quick) 12 else 24).toFloat() else 0f)
+        setBehindBlur(0f)
         travelled = false
         appHere = false
         removeCallbacks(meltAnyway)
@@ -194,7 +198,6 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
                 Look.FUOCO -> FUOCO_MS
                 Look.ONDA -> ONDA_MS
                 Look.LAMA -> LAMA_MS
-                Look.ZOOM -> ZOOM_MS
                 Look.REVEAL -> REVEAL_MS
                 Look.GROW -> GROW_MS
                 else -> TRAVEL_MS
@@ -228,7 +231,10 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         if (visibility != VISIBLE) return
         animate().alpha(0f).setDuration(MELT_MS).setInterpolator(null)
             .setUpdateListener(null)
-            .withEndAction { setBehindBlur(0f); setRenderEffect(null); visibility = INVISIBLE; picture = null; icon = null; soft?.recycle(); soft = null }
+            .withEndAction {
+                setBehindBlur(0f); setRenderEffect(null); visibility = INVISIBLE; picture = null; icon = null
+                soft?.recycle(); soft = null; backdrop?.recycle(); backdrop = null; softBack?.recycle(); softBack = null
+            }
             .start()
     }
 
@@ -280,14 +286,13 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        // The veil: what you are leaving recedes into the bar's own dark ground. It also hides
-        // One UI shrinking the old app away behind the switch, which showed as grey margins
+        // What you are leaving, held still (see setBackdrop), then the veil it recedes behind
+        drawBackdrop(canvas)
         veil(canvas)
         when (look) {
             Look.FUOCO -> { drawFuoco(canvas); return }
             Look.ONDA -> { drawOnda(canvas); return }
             Look.LAMA -> { drawLama(canvas); return }
-            Look.ZOOM -> { drawZoom(canvas); return }
             Look.REVEAL -> { drawReveal(canvas); return }
             Look.GROW -> { drawGrow(canvas); return }
             else -> Unit
@@ -414,8 +419,48 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
 
     private val ground = Paint().apply { color = 0xFF0E1311.toInt() }
 
+    // ---- The screen you are leaving (25 Oct 2026) ------------------------------------------
+    // Since the quiet launch, the new app appears at once underneath the switch, and showed
+    // dimly through the veil around the moving shape before the shape had arrived: the
+    // destination seen twice. Now the screen you are leaving is pictured the instant you tap
+    // (its app windows only, never the bar) and held still under the motion, and only then is
+    // the new app launched beneath it. If that picture cannot be had, the veil turns fully to
+    // the bar's dark ground instead, so the new app is still never seen early.
+    private var backdrop: Bitmap? = null
+    private var softBack: Bitmap? = null
+    private var coverOpaque = false
+    private val backSrc = Rect()
+    private val backDst = RectF()
+
+    /** Hands over the picture of the screen being left ([shot] covers [area], in screen pixels); null if none could be had. */
+    fun setBackdrop(shot: Bitmap?, area: Rect?) {
+        if (visibility != VISIBLE) { shot?.recycle(); return }
+        backdrop?.recycle(); softBack?.recycle(); softBack = null
+        backdrop = shot
+        if (shot == null || area == null) { coverOpaque = true; invalidate(); return }
+        val mine = IntArray(2).also { getLocationOnScreen(it) }
+        backDst.set((area.left - mine[0]).toFloat(), (area.top - mine[1]).toFloat(), (area.right - mine[0]).toFloat(), (area.bottom - mine[1]).toFloat())
+        // Fuoco and Onda: the screen you leave falls out of focus (drawn, not a window blur, so it costs nothing per frame)
+        if ((look == Look.FUOCO || look == Look.ONDA) && !quick) softBack = makeSoft(shot)
+        invalidate()
+    }
+
+    private fun drawBackdrop(canvas: Canvas) {
+        val b = backdrop ?: return
+        backSrc.set(0, 0, b.width, b.height)
+        canvas.drawBitmap(b, backSrc, backDst, null)
+        val sb = softBack ?: return
+        val f = smooth(t / 0.3f)
+        if (f > 0.01f) { paint.alpha = (255 * f).toInt(); canvas.drawBitmap(sb, null, backDst, paint); paint.alpha = 255 }
+    }
+
     /** Rises within the first eighth of the switch and stays until the hand-over. */
     private fun veil(canvas: Canvas) {
+        if (coverOpaque) {
+            ground.alpha = 255
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), ground)
+            return
+        }
         val v = (if (quick) 0.32f else 0.52f) * smooth(t / 0.12f)
         if (v <= 0.004f) return
         ground.alpha = (255 * v).toInt()
@@ -465,55 +510,28 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         }
     }
 
-    /**
-     * Zoom: the icon itself becomes the app. Its artwork swells out of the bar at full
-     * strength, then gives way to the screen you left while still travelling, so the last
-     * thing you see of the icon is the app it opened.
-     */
-    private fun drawZoom(canvas: Canvas) {
-        val g = emph.getInterpolation(t)
-        r.set(mix(iconAt.left, to.left, g), mix(iconAt.top, to.top, g), mix(iconAt.right, to.right, g), mix(iconAt.bottom, to.bottom, g))
-        val radius = mix(iconAt.width() * 0.24f, 0f, g)
-        path.reset(); path.addRoundRect(r, radius, radius, Path.Direction.CW)
-        canvas.save(); canvas.clipPath(path)
-        // The icon gives way to the app; no ground of the icon's colour behind it
-        val appIn = smooth((t - 0.12f) / 0.38f)
-        paint.alpha = (255 * appIn).toInt()
-        picture(canvas, r)
-        paint.alpha = 255
-        icon?.let { d ->
-            val a = 1f - smooth((t - 0.08f) / 0.32f)
-            if (a > 0.01f) {
-                val s = minOf(r.width(), r.height()) * mix(1f, 0.5f, g)
-                d.setBounds((r.centerX() - s / 2).toInt(), (r.centerY() - s / 2).toInt(), (r.centerX() + s / 2).toInt(), (r.centerY() + s / 2).toInt())
-                d.alpha = (255 * a).toInt(); d.draw(canvas); d.alpha = 255
-            }
-        }
-        canvas.restore()
-    }
-
     private val blade = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bladeGlow = Paint(Paint.ANTI_ALIAS_FLAG)
 
     // Lama's one-sided light: falls from a lip onto the app it uncovers, never onto the veil
     private val lipLight = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         shader = android.graphics.LinearGradient(0f, 0f, 0f, 1f,
-            intArrayOf(Color.argb(150, 236, 206, 150), Color.argb(40, 217, 187, 134), Color.TRANSPARENT),
+            intArrayOf(Color.argb(120, 240, 214, 160), Color.argb(26, 217, 187, 134), Color.TRANSPARENT),
             floatArrayOf(0f, 0.35f, 1f), android.graphics.Shader.TileMode.CLAMP)
     }
     // And the cover's thickness: a soft shadow on the veil side of each lip
     private val lipShade = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        shader = android.graphics.LinearGradient(0f, 0f, 0f, 1f, Color.argb(110, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+        shader = android.graphics.LinearGradient(0f, 0f, 0f, 1f, Color.argb(80, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
     }
     private val head = Paint(Paint.ANTI_ALIAS_FLAG)
     // The same two, running across x, for a bar standing at a side
     private val lipLightH = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         shader = android.graphics.LinearGradient(0f, 0f, 1f, 0f,
-            intArrayOf(Color.argb(150, 236, 206, 150), Color.argb(40, 217, 187, 134), Color.TRANSPARENT),
+            intArrayOf(Color.argb(120, 240, 214, 160), Color.argb(26, 217, 187, 134), Color.TRANSPARENT),
             floatArrayOf(0f, 0.35f, 1f), android.graphics.Shader.TileMode.CLAMP)
     }
     private val lipShadeH = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        shader = android.graphics.LinearGradient(0f, 0f, 1f, 0f, Color.argb(110, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+        shader = android.graphics.LinearGradient(0f, 0f, 1f, 0f, Color.argb(80, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
     }
 
     /**
@@ -525,10 +543,12 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
      * they reach the edges and the app is simply there. Concentrato keeps only the lines.
      */
     private fun drawLama(canvas: Canvas) {
-        val dx = to.centerX() - iconAt.centerX(); val dy = to.centerY() - iconAt.centerY()
-        val across = kotlin.math.abs(dx) / to.width().coerceAtLeast(1f) > kotlin.math.abs(dy) / to.height().coerceAtLeast(1f)
-        val draw = emph.getInterpolation((t / 0.3f).coerceAtMost(1f))
-        val open = emph.getInterpolation(((t - 0.14f) / 0.86f).coerceIn(0f, 1f))
+        // The blade always runs along the bar (25 Oct 2026): it used to follow the line from the
+        // icon to the screen's centre, so a bar floating mid-screen drew it across itself
+        val across = !barAcross
+        // Sharpened: the blade is drawn in a fifth of the switch and the slit opens hard behind it
+        val draw = emph.getInterpolation((t / 0.2f).coerceAtMost(1f))
+        val open = emph.getInterpolation(((t - 0.09f) / 0.91f).coerceIn(0f, 1f))
         val pos = if (!across) iconAt.centerY().coerceIn(to.top, to.bottom) else iconAt.centerX().coerceIn(to.left, to.right)
         if (!across) r.set(to.left, mix(pos, to.top, open), to.right, mix(pos, to.bottom, open))
         else r.set(mix(pos, to.left, open), to.top, mix(pos, to.right, open), to.bottom)
@@ -537,11 +557,11 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             picture(canvas, to)
             canvas.restore()
         }
-        val light = 1f - smooth((open - 0.5f) / 0.45f)
+        val light = 1f - smooth((open - 0.4f) / 0.4f)
         if (light <= 0.01f) return
-        val thick = context.dp(1.5f).toFloat()
-        val spill = context.dp(if (quick) 0 else 22).toFloat() * (0.4f + 0.6f * light)
-        blade.color = Color.argb((240 * light).toInt(), 248, 232, 196)
+        val thick = context.dp(1.25f).toFloat()
+        val spill = context.dp(if (quick) 0 else 14).toFloat() * (0.5f + 0.5f * light)
+        blade.color = Color.argb((255 * light).toInt(), 252, 240, 212)
         // The cut's axis: c along the blade, the two lips at lo and hi across it
         val c = if (!across) iconAt.centerX() else iconAt.centerY()
         val start = if (!across) to.left else to.top
@@ -581,7 +601,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
             val mid = (lo + hi) / 2f
             for (p in floatArrayOf(a0, a1)) {
                 val x = if (!across) p else mid; val y = if (!across) mid else p
-                val rad = context.dp(10).toFloat()
+                val rad = context.dp(7).toFloat()
                 mx.reset(); mx.setScale(rad, rad); mx.postTranslate(x, y)
                 headShader.setLocalMatrix(mx)
                 head.alpha = (230 * run).toInt()
@@ -806,10 +826,9 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         const val TRAVEL_MS = 400L
         const val LAMP_TRAVEL_MS = 480L
         /** The hand-over to the live app: with the picture landing on the app exactly, a near cut. */
-        const val MELT_MS = 90L
+        const val MELT_MS = 70L
         const val FUOCO_MS = 440L
-        const val LAMA_MS = 420L
-        const val ZOOM_MS = 400L
+        const val LAMA_MS = 380L
         const val REVEAL_MS = 360L
         const val GROW_MS = 380L
         const val ONDA_MS = 440L

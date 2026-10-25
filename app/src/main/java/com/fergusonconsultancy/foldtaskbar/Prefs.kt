@@ -9,11 +9,9 @@ import android.content.SharedPreferences
  */
 enum class Motion(val label: String) {
     // Drawn by the bar itself (see Pour.kt), in the order offered
-    MEMBRANA("Membrana: the app arrives as a membrane, its edges bowing against their own speed and snapping taut (drawn by the bar)"),
     FUOCO("Fuoco: the app behind falls out of focus while the new one rises from its icon, soft, and sharpens as it fills the screen (drawn by the bar)"),
     ONDA("Onda: the app wells up from its icon in a widening circle as the app behind falls out of focus (drawn by the bar)"),
     LAMA("Lama: two points of light race out of the icon drawing a blade along the bar, and the app is uncovered from it, light falling from each lip onto the app (drawn by the bar)"),
-    ZOOM("Zoom: the icon itself swells into the app, its artwork giving way to the screen you left (drawn by the bar)"),
     REVEAL("Reveal: nothing moves but the opening. The app is already in place and a window widens from the icon to uncover it (drawn by the bar)"),
     GROW("Grow: the whole app, at its true proportions, scales up out of the icon (drawn by the bar)"),
     SYSTEM("System animation"),
@@ -21,9 +19,9 @@ enum class Motion(val label: String) {
 
     /** The motions the bar draws itself, and how. */
     val look: Look? get() = when (this) {
-        MEMBRANA -> Look.MEMBRANA; FUOCO -> Look.FUOCO
+        FUOCO -> Look.FUOCO
         ONDA -> Look.ONDA; LAMA -> Look.LAMA
-        ZOOM -> Look.ZOOM; REVEAL -> Look.REVEAL; GROW -> Look.GROW; SYSTEM -> null
+        REVEAL -> Look.REVEAL; GROW -> Look.GROW; SYSTEM -> null
     }
 }
 
@@ -126,7 +124,8 @@ object Prefs {
 
     /** Pour and Cascata were retired on 24 Oct 2026: a saved Pour becomes Membrana, a saved Cascata becomes Lama. */
     fun motion(c: Context): Motion = when (val s = of(c).getString(MOTION, null)) {
-        "POUR" -> Motion.MEMBRANA
+        "POUR", "MEMBRANA" -> Motion.LAMA // Membrana retired from the bar, 25 Oct 2026
+        "ZOOM" -> Motion.GROW // Zoom retired from the bar, 25 Oct 2026
         "CASCATA" -> Motion.LAMA
         "FANALE" -> Motion.LAMA // Fanale retired from the bar, 25 Oct 2026
         null -> Motion.LAMA
