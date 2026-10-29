@@ -205,20 +205,23 @@ class SplitActivity : Activity() {
             val grow = Curves.OPEN.getInterpolation((t / 0.45f).coerceAtMost(1f))
             line.strokeWidth = context.dp(1.5f).toFloat()
             line.alpha = (220 * (1f - 0.5f * ((t - 0.6f) / 0.4f).coerceIn(0f, 1f))).toInt()
-            canvas.drawLine(cx, cy - grow * h / 2f, cx, cy + grow * h / 2f, line)
+            // On its side the crease runs across, and the halves are above and below it (29 Oct 2026)
+            val across = display?.rotation.let { it == android.view.Surface.ROTATION_90 || it == android.view.Surface.ROTATION_270 }
+            if (across) canvas.drawLine(cx - grow * w / 2f, cy, cx + grow * w / 2f, cy, line)
+            else canvas.drawLine(cx, cy - grow * h / 2f, cx, cy + grow * h / 2f, line)
 
             // The apps part from the crease and settle at the centres of their halves
             val part = Curves.OPEN.getInterpolation(((t - 0.12f) / 0.88f).coerceIn(0f, 1f))
             val size = context.dp(72)
-            fun icon(d: Drawable?, toX: Float) {
+            fun icon(d: Drawable?, toX: Float, toY: Float) {
                 d ?: return
-                val x = cx + (toX - cx) * part
-                d.setBounds((x - size / 2).toInt(), (cy - size / 2).toInt(), (x + size / 2).toInt(), (cy + size / 2).toInt())
+                val x = cx + (toX - cx) * part; val y = cy + (toY - cy) * part
+                d.setBounds((x - size / 2).toInt(), (y - size / 2).toInt(), (x + size / 2).toInt(), (y + size / 2).toInt())
                 d.alpha = (255 * (part * 1.6f).coerceAtMost(1f)).toInt()
                 d.draw(canvas)
             }
-            icon(leftIcon, w * 0.25f)
-            icon(rightIcon, w * 0.75f)
+            if (across) { icon(leftIcon, cx, h * 0.25f); icon(rightIcon, cx, h * 0.75f) }
+            else { icon(leftIcon, w * 0.25f, cy); icon(rightIcon, w * 0.75f, cy) }
         }
     }
 
