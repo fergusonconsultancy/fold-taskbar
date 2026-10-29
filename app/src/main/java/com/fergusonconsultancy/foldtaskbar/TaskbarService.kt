@@ -752,8 +752,16 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         settle(i, host, cx / s.width(), cy / s.height(), upright)
     }
 
+    private fun creaseAcross(): Boolean = runCatching {
+        val r = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY).rotation
+        r == android.view.Surface.ROTATION_90 || r == android.view.Surface.ROTATION_270
+    }.getOrDefault(false)
+
     /** On a flat bar, the crease is a magnet: centre on it, or on either half for the pair. */
     private fun creaseSnap(shape: Shape, i: Int, cx: Float): Float {
+        // The crease runs down the inner screen held upright; on its side it runs across, and a
+        // flat bar has no crease along it to centre on (29 Oct 2026)
+        if (creaseAcross()) return cx
         val w = screen().width()
         val targets = if (shape == Shape.PAIR) listOf(w * 0.25f, w * 0.75f) else listOf(w * 0.5f)
         val pull = dp(28)
