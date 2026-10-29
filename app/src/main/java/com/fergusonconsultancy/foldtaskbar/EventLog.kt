@@ -14,6 +14,15 @@ object EventLog {
     private const val KEY = "event_log"
     private const val MAX_LINES = 60
 
+    /** Writes at once, for a crash report: the process may not live to finish an ordinary write. */
+    @Synchronized
+    fun addNow(context: Context, line: String) {
+        val p = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        val stamp = SimpleDateFormat("HH:mm:ss", Locale.UK).format(Date())
+        val lines = (p.getString(KEY, "").orEmpty().lines().filter { it.isNotBlank() } + "$stamp  $line").takeLast(MAX_LINES)
+        p.edit().putString(KEY, lines.joinToString("\n")).commit()
+    }
+
     @Synchronized
     fun add(context: Context, line: String) {
         val p = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)

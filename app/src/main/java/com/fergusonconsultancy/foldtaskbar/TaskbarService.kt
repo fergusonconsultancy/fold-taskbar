@@ -107,6 +107,17 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     // ---- Lifecycle ----------------------------------------------------------------
 
     override fun onServiceConnected() {
+        // If anything ever does take the service down, the reason is written to the event log
+        // first, so it can be found and fixed rather than guessed at (29 Oct 2026)
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                val at = e.stackTrace.firstOrNull { it.className.startsWith("com.fergusonconsultancy") }
+                EventLog.addNow(this, "Stopped by an error: ${e.javaClass.simpleName}: ${e.message?.take(120)} at ${at?.fileName}:${at?.lineNumber}")
+                getSharedPreferences("fold_taskbar_health", MODE_PRIVATE).edit().putLong("crashed_at", System.currentTimeMillis()).commit()
+            }
+            previous?.uncaughtException(t, e)
+        }
         wm = getSystemService(WindowManager::class.java)
         apps = Apps(this)
         Prefs.offerFanale(this)
@@ -132,7 +143,57 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         apps.onPackagesChanged { warmApps(rebuildList = true) }
         warmApps(rebuildList = false)
         EventLog.add(this, "Taskbar started. Home app: ${apps.homePackage() ?: "unknown"}")
+        useAccessibilityButton()
+        runCatching { android.service.quicksettings.TileService.requestListeningState(this, android.content.ComponentName(this, TaskbarTile::class.java)) }
         scheduleScan()
+    }
+
+    // ---- Calling the bar back (29 Oct 2026) ------------------------------------------------
+    // However the bar has gone from view (tucked into its tab, auto-hidden, receded), these
+    // bring it back in one move: the Quick Settings tile, or Android's accessibility button or
+    // gesture once it is assigned to Fold Taskbar. The tile also shows whether the bar is
+    // actually running, so "has it stopped?" always has an answer.
+
+    /** Brings the bar back into full view, from wherever it has gone, and says so in the log. */
+    fun summon() {
+        main.post {
+            val was = when {
+                Prefs.collapsed(this) != null -> "its tab"
+                Prefs.autoHide(this) && !revealed -> "auto-hide"
+                receded -> "receding"
+                !barOn -> "hidden (${hideReason()})"
+                else -> "already in view"
+            }
+            if (Prefs.collapsed(this) != null) expand()
+            returnFromRecede(gentle = false)
+            if (Prefs.autoHide(this)) { revealed = true; scheduleAutoHide() }
+            layoutKey = ""
+            scheduleScan()
+            apply()
+            capsules.forEach { it.setResting(false) }
+            scheduleRest()
+            EventLog.add(this, "Called back from $was")
+        }
+    }
+
+    /** Why the bar is not showing, in plain words, for the log. */
+    private fun hideReason(): String = when {
+        !isMainScreen() -> "not on the main screen"
+        getSystemService(KeyguardManager::class.java).isKeyguardLocked -> "phone locked"
+        systemInFront -> "a system panel is in front"
+        onScreen.isEmpty() -> "no app seen on screen yet"
+        else -> "front app ${onScreen.first()} is excluded"
+    }
+
+    private fun useAccessibilityButton() {
+        runCatching {
+            val info = serviceInfo ?: return
+            info.flags = info.flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_REQUEST_ACCESSIBILITY_BUTTON
+            serviceInfo = info
+            accessibilityButtonController.registerAccessibilityButtonCallback(object : android.accessibilityservice.AccessibilityButtonController.AccessibilityButtonCallback() {
+                override fun onClicked(controller: android.accessibilityservice.AccessibilityButtonController) = summon()
+            })
+        }
     }
 
     override fun onDestroy() {
@@ -142,6 +203,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         runCatching { Prefs.of(this).unregisterOnSharedPreferenceChangeListener(this) }
         runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
         runCatching { unregisterReceiver(revealReceiver) }
+        runCatching { android.service.quicksettings.TileService.requestListeningState(this, android.content.ComponentName(this, TaskbarTile::class.java)) }
         removeBar()
         removeTab()
         closePanels()
@@ -249,10 +311,13 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     private val scan = Runnable {
-        scanWindows()
+        runCatching { scanWindows() }.onFailure { EventLog.add(this, "Recovered from ${it.javaClass.simpleName} while reading the screen") }
         main.post(applyNow)
     }
-    private val applyNow = Runnable { apply() }
+    private val applyNow = Runnable {
+        // One bad moment must never take the whole bar down: log it and carry on
+        runCatching { apply() }.onFailure { EventLog.add(this, "Recovered from ${it.javaClass.simpleName} while laying out the bar: ${it.message?.take(100)}") }
+    }
 
     private fun scheduleScan() {
         bg.removeCallbacks(scan)

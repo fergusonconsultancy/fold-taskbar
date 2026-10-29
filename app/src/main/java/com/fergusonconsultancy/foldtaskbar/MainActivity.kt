@@ -24,6 +24,7 @@ import android.widget.TextView
 class MainActivity : Activity() {
 
     private lateinit var screen: Screen
+    private lateinit var setupNote: android.widget.TextView
     private lateinit var setup: LinearLayout
     private lateinit var iconsRow: Row
     private lateinit var presenceDetail: TextView
@@ -46,6 +47,8 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         })
         setup.addView(eyebrow("Switch it on"))
+        setupNote = text("", 13.5f, Kit.MUTED).apply { setPadding(px(4), 0, 0, px(10)) }
+        setup.addView(setupNote)
         setup.addView(steps)
         screen.add(setup)
 
@@ -92,6 +95,17 @@ class MainActivity : Activity() {
             val detail = m.label.substringAfter(": ", "").replaceFirstChar { it.uppercase() }.ifBlank { "Android's own animation" }
             Triple(name, detail, motionSwatch(m))
         }, motions.indexOf(Prefs.motion(this))) { Prefs.setMotion(this, motions[it]); refresh() })
+
+        // ---- Calling it back (29 Oct 2026)
+        screen.section("Calling the bar back")
+        screen.add(Card(this).apply {
+            row(Row(this@MainActivity, "Quick Settings tile", "Lit when the bar is running. Tap it and the bar comes back from its tab, from auto-hide or from receding; dim, it takes you to switch the bar back on", endValue("Add  ›", Kit.CHAMPAGNE)) {
+                addTile()
+            })
+            row(Row(this@MainActivity, "Accessibility button", "Assign Android's accessibility button or gesture to Fold Taskbar and it calls the bar back from anywhere", endValue("Set up  ›", Kit.CHAMPAGNE)) {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            })
+        })
 
         // ---- Behaviour
         screen.section("Behaviour")
@@ -151,10 +165,14 @@ class MainActivity : Activity() {
         val enabled = serviceEnabled()
         when {
             enabled && TaskbarService.running -> screen.status.set("On", Kit.GOOD)
-            enabled -> screen.status.set("Starting", Kit.WARN)
+            enabled -> screen.status.set("Stopped", Kit.WARN)
             else -> screen.status.set("Off", Kit.MUTED)
         }
-        setup.visibility = if (enabled) View.GONE else View.VISIBLE
+        // Switched on but not running: Android has stopped it (after a force stop, or an error).
+        // The same two steps bring it back, so the setup card returns with a plain explanation
+        val stopped = enabled && !TaskbarService.running
+        setup.visibility = if (enabled && !stopped) View.GONE else View.VISIBLE
+        setupNote.text = if (stopped) "Android has stopped the bar (force stopping the app does this). Open Accessibility, switch Fold Taskbar off, then on again." else "Fold Taskbar runs as an accessibility service, so Android asks you to switch it on once."
         val pack = Prefs.iconPack(this)
         val packs = IconPack.installed(this)
         iconsRow.setSub(when {
@@ -165,6 +183,24 @@ class MainActivity : Activity() {
         versionText.text = "Version " + runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrDefault("?") +
             "  ·  " + Prefs.motion(this).name.lowercase() + ", " + Prefs.finish(this).name.lowercase() + ", " + Prefs.presence(this).name.lowercase()
         logText.text = EventLog.read(this).ifBlank { "Nothing logged yet." }
+    }
+
+    /** Asks Android to add the Taskbar tile to Quick Settings (Android 13 and later), else explains where it is. */
+    private fun addTile() {
+        val component = ComponentName(this, TaskbarTile::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            runCatching {
+                getSystemService(android.app.StatusBarManager::class.java).requestAddTileService(component, "Taskbar",
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_tile_taskbar), mainExecutor) { result ->
+                    EventLog.add(this, "Quick Settings tile: " + when (result) {
+                        android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED -> "added"
+                        android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED -> "already there"
+                        else -> "not added"
+                    })
+                    refresh()
+                }
+            }.onFailure { EventLog.add(this, "Quick Settings tile: add it by editing Quick Settings and dragging in Taskbar") }
+        } else EventLog.add(this, "Quick Settings tile: add it by editing Quick Settings and dragging in Taskbar")
     }
 
     private fun serviceEnabled(): Boolean {
