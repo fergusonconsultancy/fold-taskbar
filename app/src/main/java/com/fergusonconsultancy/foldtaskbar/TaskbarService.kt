@@ -125,6 +125,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val filter = android.content.IntentFilter("com.fergusonconsultancy.foldmotion.REVEAL")
         if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(revealReceiver, filter, RECEIVER_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(revealReceiver, filter)
+        // Locking and unlocking are system broadcasts: no flag needed, and nothing else sends them
+        registerReceiver(lockReceiver, android.content.IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_USER_PRESENT)
+        })
         preloadPictures()
         guide = DragGuide(this, wm)
         getSystemService(android.hardware.SensorManager::class.java)?.let { sm ->
@@ -157,6 +161,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     /** Brings the bar back into full view, from wherever it has gone, and says so in the log. */
     fun summon() {
         main.post {
+            // From the lock screen's Quick Settings or the accessibility button: never while locked
+            if (locked()) { EventLog.add(this, "Call ignored: the phone is locked"); return@post }
             val was = when {
                 Prefs.collapsed(this) != null -> "its tab"
                 Prefs.autoHide(this) && !revealed -> "auto-hide"
@@ -179,7 +185,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     /** Why the bar is not showing, in plain words, for the log. */
     private fun hideReason(): String = when {
         !isMainScreen() -> "not on the main screen"
-        getSystemService(KeyguardManager::class.java).isKeyguardLocked -> "phone locked"
+        locked() -> "phone locked"
         systemInFront -> "a system panel is in front"
         onScreen.isEmpty() -> "no app seen on screen yet"
         else -> "front app ${onScreen.first()} is excluded"
@@ -203,6 +209,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         runCatching { Prefs.of(this).unregisterOnSharedPreferenceChangeListener(this) }
         runCatching { getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener) }
         runCatching { unregisterReceiver(revealReceiver) }
+        runCatching { unregisterReceiver(lockReceiver) }
         runCatching { android.service.quicksettings.TileService.requestListeningState(this, android.content.ComponentName(this, TaskbarTile::class.java)) }
         removeBar()
         removeTab()
@@ -405,9 +412,34 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     private fun shouldShow(): Boolean {
-        val locked = getSystemService(KeyguardManager::class.java).isKeyguardLocked
         val front = onScreen.firstOrNull()
-        return isMainScreen() && !locked && !systemInFront && front != null && front !in hidePackages
+        return isMainScreen() && !locked() && !systemInFront && front != null && front !in hidePackages
+    }
+
+    /**
+     * Locked, in every form (30 Oct 2026): the screen off, the lock screen showing, or the
+     * phone still locked beneath something shown over the lock screen (the camera from the
+     * lock screen, a call). Whatever its presence, the bar is never there while any holds.
+     */
+    private fun locked(): Boolean {
+        val power = getSystemService(android.os.PowerManager::class.java)
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        return !power.isInteractive || keyguard.isKeyguardLocked || keyguard.isDeviceLocked
+    }
+
+    /**
+     * The bar used to learn of a lock only when the screen next changed, and then waited a
+     * moment to be sure, so it could linger on the lock screen. Now locking takes it away in
+     * the same frame, like folding, and unlocking brings it back with its soft entrance.
+     */
+    private val lockReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context?, i: Intent?) {
+            when (i?.action) {
+                Intent.ACTION_SCREEN_OFF -> if (::wm.isInitialized) vanish()
+                Intent.ACTION_SCREEN_ON -> if (::wm.isInitialized && locked()) vanish()
+                Intent.ACTION_USER_PRESENT -> scheduleScan()
+            }
+        }
     }
 
     // ---- Drawing the bar ----------------------------------------------------------
@@ -421,7 +453,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         reportOpenTime()
         sampleSoon()
 
-        if (!isMainScreen()) { vanish(); return }
+        if (!isMainScreen() || locked()) { vanish(); return }
         if (!shouldShow()) {
             // Anything other than folding waits a moment to be sure.
             val delay = 220L
