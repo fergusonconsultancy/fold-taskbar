@@ -453,17 +453,34 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
      * The hinge. The bar leaves the instant the phone starts to close, before the cover
      * screen even wakes, and comes back once it is open and the main screen is on.
      */
+    /**
+     * 30 Oct 2026: the bar treated any angle under 150° as closing, so it left the main screen
+     * whenever the phone was held a little short of flat, or stood half open in Flex mode (the
+     * log read 90°). The main screen is in use at any angle. Now the bar leaves early only when
+     * the hinge is actually closing (falling fast) or nearly shut; held still at any angle above
+     * that, it stays. When a fast fall stops short of shut, it comes back.
+     */
+    private var hingeAt = 0L
+    private val hingeStill = Runnable {
+        // No reading since a fast fall: the hinge has stopped moving
+        if (folding && hingeAngle >= SHUT_DEG) { folding = false; settleScans() }
+    }
+
     override fun onSensorChanged(event: android.hardware.SensorEvent) {
         val angle = event.values.firstOrNull() ?: return
-        hingeAngle = angle
-        val closing = angle < 150f
-        if (closing && !folding) {
+        val now = SystemClock.uptimeMillis()
+        val rate = if (!hingeAngle.isNaN() && now > hingeAt) (angle - hingeAngle) * 1000f / (now - hingeAt) else 0f
+        hingeAngle = angle; hingeAt = now
+        val shutting = angle < SHUT_DEG || (angle < CLOSING_BELOW_DEG && rate < -CLOSING_RATE_DEG_S)
+        main.removeCallbacks(hingeStill)
+        if (shutting && !folding) {
             folding = true
             vanish()
-        } else if (!closing && folding) {
+        } else if (!shutting && folding && rate >= -CLOSING_RATE_DEG_S / 3f) {
             folding = false
             settleScans()
         }
+        if (folding && angle >= SHUT_DEG) main.postDelayed(hingeStill, 260)
     }
 
     override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) = Unit
@@ -2486,6 +2503,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         const val RECEDE_HOLD_MS = 700L
         /** While the bar is hidden on the unfolded, unlocked main screen, how often it looks again. */
         const val WATCH_MS = 350L
+        /** Below this the phone is as good as shut, and the bar leaves. */
+        const val SHUT_DEG = 30f
+        /** Above it, even a fast close is a change of posture, not a close. */
+        const val CLOSING_BELOW_DEG = 120f
+        const val CLOSING_RATE_DEG_S = 160f
         /** However Recede is set, a newly arrived app's own opening scrolls never send the bar back. */
         const val RECEDE_SETTLE_MS = 1500L
         /** The bar's entrance after an unfold: long and gentle. */
