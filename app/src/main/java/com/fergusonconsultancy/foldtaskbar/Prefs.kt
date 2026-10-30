@@ -231,7 +231,15 @@ object Prefs {
      * Presence: Always shows the bar at all times. Trim (the Giulietta principle) lets it rest as
      * a fine line of trim; touch it and the icons materialise around your finger, nearest first.
      */
-    fun presence(c: Context) = runCatching { Presence.valueOf(of(c).getString("presence", null)!!) }.getOrDefault(Presence.ALWAYS)
+    /** How the bar behaves inside apps. Recede by default since 30 Oct 2026: it steps back while you read and returns on its own. */
+    fun presence(c: Context) = runCatching { Presence.valueOf(of(c).getString("presence", null)!!) }.getOrDefault(Presence.RECEDE)
+
+    /**
+     * The home screen is the hub (30 Oct 2026): on it the bar is always there in full, whatever
+     * the presence or auto-hide, unless the owner turns this off.
+     */
+    fun homeInFull(c: Context) = of(c).getBoolean("home_in_full", true)
+    fun setHomeInFull(c: Context, v: Boolean) = of(c).edit().putBoolean("home_in_full", v).apply()
     fun setPresence(c: Context, v: Presence) = of(c).edit().putString("presence", v.name).apply()
 
     /**

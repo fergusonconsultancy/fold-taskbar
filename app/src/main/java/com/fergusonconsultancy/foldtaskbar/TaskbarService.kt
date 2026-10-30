@@ -84,6 +84,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     /** The home apps (launchers). The bar belongs here more than anywhere. */
     @Volatile private var homes: Set<String> = emptySet()
     private var lastHideWhy: String? = null
+    private var lastFront: String? = null
+
+    /** On the home screen with the hub rule on: the bar is in full, and nothing sends it away. */
+    private fun hubInFull() = Prefs.homeInFull(this) && onScreen.firstOrNull() in homes
     private var noRecents: Set<String> = emptySet()
 
     /** Folding: true from the moment the hinge starts to close until the main screen is back. */
@@ -305,7 +309,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (Prefs.presence(this) != Presence.RECEDE || !barOn || (::drawer.isInitialized && drawer.isOpen) || menuWindow != null) return
         // Never on the home screen: turning its pages and its live widgets report as scrolling,
         // and that kept the bar faded on the one screen it exists for (30 Oct 2026)
-        if (onScreen.firstOrNull() in homes) return
+        if (hubInFull()) return
         if (!receded && stillInFull()) return
         if (byTap) { recededByTap = true; main.removeCallbacks(comeBack) }
         else if (!recededByTap) { main.removeCallbacks(comeBack); main.postDelayed(comeBack, RECEDE_HOLD_MS) }
@@ -510,7 +514,21 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         main.removeCallbacks(hideNow)
         if (lastHideWhy != null) { EventLog.add(this, "Bar shown over ${onScreen.firstOrNull()}"); lastHideWhy = null }
         // Home has come forward: a receded bar comes back in full
-        if (receded && onScreen.firstOrNull() in homes) returnFromRecede(gentle = true)
+        // The hub: arriving home, the bar is there in full, whatever it was doing in the app
+        val front = onScreen.firstOrNull()
+        if (front != lastFront) {
+            val wasHub = lastFront in homes
+            lastFront = front
+            if (hubInFull()) {
+                if (receded) returnFromRecede(gentle = true)
+                capsules.forEach { if (it.resting) it.setResting(false) }
+                main.removeCallbacks(autoHideNow)
+            } else if (wasHub) {
+                // Leaving the hub for an app: the presence chosen for apps takes over again
+                scheduleRest()
+                if (Prefs.autoHide(this)) { revealed = false }
+            }
+        }
 
         val shape = Prefs.shape(this)
         val finish = Prefs.finish(this)
@@ -548,7 +566,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
         val collapsed = Prefs.collapsed(this)
         val panelsOpen = drawer.isOpen || menuWindow != null
-        val autoHidden = collapsed == null && Prefs.autoHide(this) && !revealed && !panelsOpen
+        val autoHidden = collapsed == null && Prefs.autoHide(this) && !revealed && !panelsOpen && !hubInFull()
         if (collapsed != null) showTab(collapsed) else removeTab()
         if (autoHidden) showStrips() else removeStrips()
         setBarOn(true)
@@ -557,7 +575,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     /** Whether one capsule should be on screen right now. */
     private fun hostWanted(i: Int): Boolean {
         if (!barOn || Prefs.collapsed(this) != null) return false
-        if (Prefs.autoHide(this) && !revealed && !drawer.isOpen && menuWindow == null) return false
+        if (Prefs.autoHide(this) && !revealed && !drawer.isOpen && menuWindow == null && !hubInFull()) return false
         // The keyboard only pushes aside a capsule it would actually cover
         val top = keyboardTop ?: return true
         val lp = hosts[i].layoutParams as? WindowManager.LayoutParams ?: return true
@@ -2024,7 +2042,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     /** Presence: Trim. Rests every capsule as trim unless something of the bar is open. */
     private fun restIfTrim() {
         main.removeCallbacks(restNow)
-        if (Prefs.presence(this) != Presence.TRIM) { capsules.forEach { it.setResting(false) }; return }
+        if (Prefs.presence(this) != Presence.TRIM || hubInFull()) { capsules.forEach { it.setResting(false) }; return }
         if ((::drawer.isInitialized && drawer.isOpen) || menuWindow != null || focused != null || hosts.any { it.dragging }) {
             main.postDelayed(restNow, 1500); return
         }
