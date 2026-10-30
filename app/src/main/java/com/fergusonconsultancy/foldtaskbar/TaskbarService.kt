@@ -1244,9 +1244,11 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     // Advanced tuning: the reaction delay, held once per swipe however many moves it reports
     private var revealQueued = false
-    private val revealQueuedNow = Runnable { revealQueued = false; if (!revealed) { tick(); reveal() } }
-    private fun revealSoon() {
+    private var revealFrom: View? = null
+    private val revealQueuedNow = Runnable { revealQueued = false; if (!revealed) { revealFrom?.tick(); reveal() }; revealFrom = null }
+    private fun revealSoon(from: View) {
         if (revealed || revealQueued) return
+        revealFrom = from
         val d = Tuning.delayMs(this)
         if (d <= 0) { revealQueuedNow.run(); return }
         revealQueued = true
@@ -1281,8 +1283,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                     when (e.actionMasked) {
                         MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY }
                         // Advanced tuning: call sensitivity sets how far the swipe must travel
-                        MotionEvent.ACTION_MOVE -> if (abs(downY - e.rawY) + abs(downX - e.rawX) > dp(Tuning.callThresholdDp(this@TaskbarService))) revealSoon()
-                        MotionEvent.ACTION_UP -> revealSoon()
+                        MotionEvent.ACTION_MOVE -> if (abs(downY - e.rawY) + abs(downX - e.rawX) > dp(Tuning.callThresholdDp(this@TaskbarService))) revealSoon(this)
+                        MotionEvent.ACTION_UP -> revealSoon(this)
                     }
                     true
                 }
