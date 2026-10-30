@@ -81,6 +81,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     @Volatile private var keyboardTop: Int? = null
     @Volatile private var systemInFront = false
     private var hidePackages: Set<String> = emptySet()
+    /** The home apps (launchers). The bar belongs here more than anywhere. */
+    @Volatile private var homes: Set<String> = emptySet()
+    private var lastHideWhy: String? = null
     private var noRecents: Set<String> = emptySet()
 
     /** Folding: true from the moment the hinge starts to close until the main screen is back. */
@@ -139,7 +142,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         // The bar now stays on the home screen too; only system surfaces such as the
         // notification shade push it aside.
         hidePackages = setOf("com.android.systemui")
-        noRecents = homePackages() + hidePackages
+        homes = linkedSetOf<String>().apply { apps.homePackage()?.let(::add); addAll(homePackages()) }
+        noRecents = homes + hidePackages
         Prefs.of(this).registerOnSharedPreferenceChangeListener(this)
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
         running = true
@@ -299,6 +303,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     private fun recede(byTap: Boolean = false) {
         if (Prefs.presence(this) != Presence.RECEDE || !barOn || (::drawer.isInitialized && drawer.isOpen) || menuWindow != null) return
+        // Never on the home screen: turning its pages and its live widgets report as scrolling,
+        // and that kept the bar faded on the one screen it exists for (30 Oct 2026)
+        if (onScreen.firstOrNull() in homes) return
         if (!receded && stillInFull()) return
         if (byTap) { recededByTap = true; main.removeCallbacks(comeBack) }
         else if (!recededByTap) { main.removeCallbacks(comeBack); main.postDelayed(comeBack, RECEDE_HOLD_MS) }
@@ -357,13 +364,20 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         val boxes = HashMap<String, Rect>()
         var imeTop: Int? = null
         var system = false
+        var unreadableFront = false
         val r = Rect()
         for (w in list) {
             when (w.type) {
                 AccessibilityWindowInfo.TYPE_INPUT_METHOD -> { w.getBoundsInScreen(r); imeTop = r.top }
                 AccessibilityWindowInfo.TYPE_SYSTEM -> if (w.isFocused) system = true
                 AccessibilityWindowInfo.TYPE_APPLICATION -> {
-                    val pkg = runCatching { w.root?.packageName?.toString() }.getOrNull() ?: continue
+                    // Some windows, launchers among them, will not give up their contents. For the
+                    // focused one, ask the active window instead; failing that, it is counted
+                    // as unreadable rather than silently skipped (30 Oct 2026)
+                    val pkg = runCatching { w.root?.packageName?.toString() }.getOrNull()
+                        ?: (if (w.isFocused) runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull() else null)
+                        ?: run { if (w.isFocused) unreadableFront = true; null }
+                        ?: continue
                     if (w.isFocused) found.add(0, pkg) else found.add(pkg)
                     w.getBoundsInScreen(r); lefts[pkg] = r.left; boxes[pkg] = Rect(r)
                 }
@@ -372,6 +386,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         keyboardTop = imeTop
         systemInFront = system
         // An empty list is a transition in progress, not a real state. Keep the last one.
+        // Nothing readable in front, and nothing seen yet: it is almost always the home screen,
+        // which used to leave the bar hidden until the first app was opened
+        if (found.isEmpty() && unreadableFront && onScreen.isEmpty()) homes.firstOrNull()?.let { found.add(it) }
         if (found.isNotEmpty()) {
             if (found.first() != onScreen.firstOrNull()) markUsed()
             onScreen = found.distinct(); onScreenLeft = lefts; onScreenBounds = boxes
@@ -465,7 +482,12 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     // ---- Drawing the bar ----------------------------------------------------------
 
-    private val hideNow = Runnable { setBarOn(false) }
+    private val hideNow = Runnable {
+        // The log says why, once each time the reason changes, so a missing bar can be traced
+        val why = hideReason()
+        if (why != lastHideWhy) { lastHideWhy = why; EventLog.add(this, "Bar hidden: $why") }
+        setBarOn(false)
+    }
 
     /** Main thread. Cheap when nothing has changed. */
     private fun apply() {
@@ -486,6 +508,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             return
         }
         main.removeCallbacks(hideNow)
+        if (lastHideWhy != null) { EventLog.add(this, "Bar shown over ${onScreen.firstOrNull()}"); lastHideWhy = null }
+        // Home has come forward: a receded bar comes back in full
+        if (receded && onScreen.firstOrNull() in homes) returnFromRecede(gentle = true)
 
         val shape = Prefs.shape(this)
         val finish = Prefs.finish(this)
