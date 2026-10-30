@@ -233,6 +233,18 @@ object Prefs {
      */
     fun presence(c: Context) = runCatching { Presence.valueOf(of(c).getString("presence", null)!!) }.getOrDefault(Presence.ALWAYS)
     fun setPresence(c: Context, v: Presence) = of(c).edit().putString("presence", v.name).apply()
+
+    /**
+     * Recede (30 Oct 2026): how long the bar stays in full after you last used it, or after an
+     * app arrives, before a scroll or a tap elsewhere sends it back.
+     */
+    val RECEDE_AFTER_MS = longArrayOf(0L, 5_000L, 30_000L, 120_000L, 300_000L)
+    val RECEDE_AFTER_LABELS = listOf("Instantly", "5 s", "30 s", "2 min", "5 min")
+    fun recedeAfter(c: Context) = of(c).getInt("recede_after", 0).coerceIn(0, RECEDE_AFTER_MS.size - 1)
+    fun setRecedeAfter(c: Context, v: Int) = of(c).edit().putInt("recede_after", v).apply()
+    /** Recede: a tap anywhere outside the bar also sends it back, until you touch it again. */
+    fun recedeOnTap(c: Context) = of(c).getBoolean("recede_on_tap", true)
+    fun setRecedeOnTap(c: Context, v: Boolean) = of(c).edit().putBoolean("recede_on_tap", v).apply()
     fun profile(c: Context) = runCatching { Profile.valueOf(of(c).getString("profile", null)!!) }.getOrDefault(Profile.ROUND)
     fun setProfile(c: Context, v: Profile) = of(c).edit().putString("profile", v.name).apply()
 
