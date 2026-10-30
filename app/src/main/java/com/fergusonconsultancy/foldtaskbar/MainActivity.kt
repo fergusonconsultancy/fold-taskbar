@@ -55,6 +55,12 @@ class MainActivity : Activity() {
 
         // ---- How the bar rests
         screen.section("Presence")
+        // The hub (30 Oct 2026): home always has the bar in full; the presence is for apps
+        screen.add(Card(this).apply {
+            row(Row(this@MainActivity, "Always in full on the home screen", "Home is the hub: the bar is always there, whatever it does in apps or whether auto-hide is on",
+                Toggle(this@MainActivity, Prefs.homeInFull(this@MainActivity)) { Prefs.setHomeInFull(this@MainActivity, it) }))
+        }, px(0))
+        screen.add(text("In apps", 14f, Kit.MUTED, 450).apply { setPadding(px(4), px(18), 0, px(8)) })
         val presences = Presence.entries
         presenceDetail = text("", 13.5f, Kit.MUTED).apply { tag = SECONDARY; setPadding(px(4), px(10), 0, 0) }
         screen.add(Segmented(this, presences.map { it.label }, presences.indexOf(Prefs.presence(this))) {
@@ -171,8 +177,8 @@ class MainActivity : Activity() {
 
     private fun paintPresence() {
         presenceDetail.text = when (Prefs.presence(this)) {
-            Presence.ALWAYS -> "The bar is always there, in full."
-            Presence.TRIM -> "The bar rests as a fine line of trim. Touch it and the icons rise around your finger; slide along it and they swell as you pass; lift on one to open it."
+            Presence.ALWAYS -> "In apps too, the bar is always there in full. It still steps aside for the keyboard."
+            Presence.TRIM -> "In apps, the bar rests as a fine line of trim. Touch it and the icons rise around your finger; slide along it and they swell as you pass; lift on one to open it."
             Presence.RECEDE -> {
                 val after = Prefs.recedeAfter(this)
                 val wait = if (after == 0) "Once a new app has settled" else "Once ${Prefs.RECEDE_AFTER_LABELS[after]} have passed since you last used the bar or opened an app"
