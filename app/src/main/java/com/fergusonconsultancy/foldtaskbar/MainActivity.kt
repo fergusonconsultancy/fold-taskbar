@@ -28,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var setup: LinearLayout
     private lateinit var iconsRow: Row
     private lateinit var presenceDetail: TextView
+    private lateinit var recedeOptions: LinearLayout
     private lateinit var logText: TextView
     private lateinit var versionText: TextView
 
@@ -60,6 +61,18 @@ class MainActivity : Activity() {
             Prefs.setPresence(this, presences[it]); paintPresence()
         })
         screen.add(presenceDetail)
+        // Recede's own settings, shown only while it is chosen (30 Oct 2026)
+        recedeOptions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(labelled("Recede after", Segmented(this@MainActivity, Prefs.RECEDE_AFTER_LABELS, Prefs.recedeAfter(this@MainActivity)) {
+                Prefs.setRecedeAfter(this@MainActivity, it); paintPresence()
+            }), LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(18) })
+            addView(Card(this@MainActivity).apply {
+                row(Row(this@MainActivity, "Tap elsewhere to recede", "A tap anywhere outside the bar sends it back, and it stays back until you touch it",
+                    Toggle(this@MainActivity, Prefs.recedeOnTap(this@MainActivity)) { Prefs.setRecedeOnTap(this@MainActivity, it); paintPresence() }))
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(12) })
+        }
+        screen.add(recedeOptions)
         paintPresence()
 
         // ---- Look
@@ -160,8 +173,14 @@ class MainActivity : Activity() {
         presenceDetail.text = when (Prefs.presence(this)) {
             Presence.ALWAYS -> "The bar is always there, in full."
             Presence.TRIM -> "The bar rests as a fine line of trim. Touch it and the icons rise around your finger; slide along it and they swell as you pass; lift on one to open it."
-            Presence.RECEDE -> "Concentrato for the bar. While you scroll the app beneath, the bar steps back to a faint presence so what you are reading has the screen, and returns, unhurried, once you stop. Touch it and it is back at once."
+            Presence.RECEDE -> {
+                val after = Prefs.recedeAfter(this)
+                val wait = if (after == 0) "Once a new app has settled" else "Once ${Prefs.RECEDE_AFTER_LABELS[after]} have passed since you last used the bar or opened an app"
+                val tap = if (Prefs.recedeOnTap(this)) " A tap elsewhere sends it back too, and it stays back until you touch it." else ""
+                "Concentrato for the bar. $wait, scrolling the app beneath sends the bar back to a faint presence so what you are reading has the screen, and it returns, unhurried, once you stop.$tap Faint, it still works: tap an app on it and that app opens."
+            }
         }
+        recedeOptions.visibility = if (Prefs.presence(this) == Presence.RECEDE) View.VISIBLE else View.GONE
     }
 
     private fun refresh() {

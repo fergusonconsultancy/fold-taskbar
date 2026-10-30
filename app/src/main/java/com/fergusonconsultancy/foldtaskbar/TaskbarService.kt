@@ -282,9 +282,26 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private var receded = false
     private val comeBack = Runnable { returnFromRecede(gentle = true) }
 
-    private fun recede() {
+    // 30 Oct 2026: the bar receded on the scrolls a new app makes as it opens, so having picked
+    // one app, it had stepped back before you could pick the next. Now it stays in full for a
+    // chosen time after you last used it or an app arrived, and only then will a scroll (or,
+    // if chosen, a tap elsewhere) send it back. Receded by a tap, it stays back until touched.
+    @Volatile private var usedAt = 0L
+    private var recededByTap = false
+
+    private fun markUsed() { usedAt = SystemClock.uptimeMillis() }
+
+    /** Whether the bar is still within its time in full. A new app always gets a moment to settle. */
+    private fun stillInFull(): Boolean {
+        val hold = maxOf(RECEDE_SETTLE_MS, Prefs.RECEDE_AFTER_MS[Prefs.recedeAfter(this)])
+        return SystemClock.uptimeMillis() - usedAt < hold
+    }
+
+    private fun recede(byTap: Boolean = false) {
         if (Prefs.presence(this) != Presence.RECEDE || !barOn || (::drawer.isInitialized && drawer.isOpen) || menuWindow != null) return
-        main.removeCallbacks(comeBack); main.postDelayed(comeBack, RECEDE_HOLD_MS)
+        if (!receded && stillInFull()) return
+        if (byTap) { recededByTap = true; main.removeCallbacks(comeBack) }
+        else if (!recededByTap) { main.removeCallbacks(comeBack); main.postDelayed(comeBack, RECEDE_HOLD_MS) }
         if (receded) return
         receded = true
         hosts.forEach { h ->
@@ -298,6 +315,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         main.removeCallbacks(comeBack)
         if (!receded) return
         receded = false
+        recededByTap = false
         hosts.forEach { h ->
             if (h.visibility != View.VISIBLE || h.tag != null) return@forEach
             h.animate().cancel()
@@ -354,7 +372,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         keyboardTop = imeTop
         systemInFront = system
         // An empty list is a transition in progress, not a real state. Keep the last one.
-        if (found.isNotEmpty()) { onScreen = found.distinct(); onScreenLeft = lefts; onScreenBounds = boxes }
+        if (found.isNotEmpty()) {
+            if (found.first() != onScreen.firstOrNull()) markUsed()
+            onScreen = found.distinct(); onScreenLeft = lefts; onScreenBounds = boxes
+        }
     }
 
     private fun homePackages(): Set<String> =
@@ -1268,8 +1289,23 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** A touch landed outside the bar. With an infinite holding time, that is what hides it. */
     override fun onOutside() {
-        if (!Prefs.autoHide(this) || !revealed || Tuning.holdMs(this) != null) return
-        if (drawer.isOpen || menuWindow != null || hosts.any { it.dragging }) return
+        // Every capsule hears a touch outside itself, including a touch on the other capsule of a
+        // pair. So the touch is judged a moment later: if it landed on the bar after all, it is
+        // a use of the bar, not a tap elsewhere.
+        val at = SystemClock.uptimeMillis()
+        main.removeCallbacks(outsideNow)
+        outsideAt = at
+        main.postDelayed(outsideNow, 60)
+    }
+
+    private var outsideAt = 0L
+    private val outsideNow = Runnable {
+        if (usedAt >= outsideAt - 20) return@Runnable
+        // Recede: a tap elsewhere sends the bar back, once its time in full is over
+        if (Prefs.presence(this) == Presence.RECEDE && Prefs.recedeOnTap(this)) recede(byTap = true)
+        // Auto-hide with an infinite holding time: a tap elsewhere is what hides it
+        if (!Prefs.autoHide(this) || !revealed || Tuning.holdMs(this) != null) return@Runnable
+        if (drawer.isOpen || menuWindow != null || hosts.any { it.dragging }) return@Runnable
         revealed = false
         apply()
     }
@@ -1295,6 +1331,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** Any touch on the bar keeps it up for a few more seconds. */
     private fun onBarTouched() {
+        markUsed()
         returnFromRecede(gentle = false)
         if (Prefs.autoHide(this) && revealed) scheduleAutoHide()
         scheduleRest()
@@ -1303,11 +1340,41 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     /** Invisible strips over each hidden capsule's footprint. Swipe or tap one to bring the bar back. */
     @SuppressLint("ClickableViewAccessibility")
     private fun showStrips() {
-        if (stripWindows.isNotEmpty()) return
-        hosts.forEach { host ->
-            val lp = host.layoutParams as? WindowManager.LayoutParams ?: return@forEach
-            val (w, h) = hostSize(host)
+        // 30 Oct 2026, calling the bar back was hit and miss. Three causes, all fixed here:
+        // the strips were laid where the capsule's window last was, which after a rebuild while
+        // hidden was the corner of the screen; once made they never moved with the bar; and each
+        // covered only the icons, so a swipe begun a little below them missed. Now each capsule
+        // is placed first, the strips are rebuilt whenever their place changes, and each reaches
+        // from just past the bar to the edge it rests against, stopping short of the system's
+        // own gesture areas so home and back still work.
+        val s = screen()
+        val boxes = hosts.indices.mapNotNull { i ->
+            val host = hosts[i]
+            place(i)
+            val lp = host.layoutParams as? WindowManager.LayoutParams ?: return@mapNotNull null
+            host.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+            val w = host.measuredWidth.takeIf { it > 0 } ?: host.width
+            val h = host.measuredHeight.takeIf { it > 0 } ?: host.height
+            if (w <= 0 || h <= 0) return@mapNotNull null
             val pad = dp(10)
+            val r = Rect(lp.x + pad, lp.y + pad, lp.x + w - pad, lp.y + h - pad)
+            val (vertical, nearStart) = restingEdge(host)
+            val reach = dp(20); val inward = dp(16); val edgeSafe = dp(24)
+            if (!vertical) {
+                r.left -= reach; r.right += reach
+                if (nearStart) { r.top = statusInset(); r.bottom += inward } else { r.top -= inward; r.bottom = s.height() - navInset() }
+            } else {
+                r.top -= reach; r.bottom += reach
+                if (nearStart) { r.left = edgeSafe; r.right += inward } else { r.left -= inward; r.right = s.width() - edgeSafe }
+            }
+            r.intersect(0, statusInset(), s.width(), s.height() - navInset())
+            r.takeIf { it.width() > 0 && it.height() > 0 }
+        }
+        val key = boxes.joinToString("|") { it.flattenToString() }
+        if (key == stripKey && stripWindows.isNotEmpty()) return
+        removeStrips()
+        stripKey = key
+        boxes.forEach { r ->
             val strip = View(this).apply {
                 contentDescription = "Show taskbar"
                 var downX = 0f; var downY = 0f
@@ -1321,12 +1388,14 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                     true
                 }
             }
-            add(strip, params(Gravity.TOP or Gravity.START, lp.x + pad, lp.y + pad, w = w - pad * 2, h = h - pad * 2))
+            add(strip, params(Gravity.TOP or Gravity.START, r.left, r.top, w = r.width(), h = r.height()))
             stripWindows += strip
         }
     }
 
-    private fun removeStrips() { stripWindows.forEach(::remove); stripWindows.clear() }
+    private var stripKey = ""
+
+    private fun removeStrips() { stripWindows.forEach(::remove); stripWindows.clear(); stripKey = "" }
 
     // ---- Contents -----------------------------------------------------------------
 
@@ -1516,6 +1585,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (onScreen.size == 1 && onScreen.first() == pkg) { closePanels(); return }
         pendingOpen = pkg
         pendingOpenAt = SystemClock.uptimeMillis()
+        markUsed()
         val pic = snapshots[pkg]
         val motion = Prefs.motion(this)
         val look = motion.look
@@ -2293,6 +2363,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         const val SETTLE_MS = 320L
         /** How long after the last scroll a receded bar waits before returning. */
         const val RECEDE_HOLD_MS = 700L
+        /** However Recede is set, a newly arrived app's own opening scrolls never send the bar back. */
+        const val RECEDE_SETTLE_MS = 1500L
         /** The bar's entrance after an unfold: long and gentle. */
         const val ENTRANCE_MS = 560L
         /** Longest the bar waits for Fold Motion to say its reveal is over. */
