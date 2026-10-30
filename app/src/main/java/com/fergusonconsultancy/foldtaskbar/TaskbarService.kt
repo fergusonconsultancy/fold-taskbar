@@ -84,7 +84,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     /** The home apps (launchers). The bar belongs here more than anywhere. */
     @Volatile private var homes: Set<String> = emptySet()
     private var lastHideWhy: String? = null
-    private var lastFront: String? = null
+    private var hubFront: String? = null
 
     /** On the home screen with the hub rule on: the bar is in full, and nothing sends it away. */
     private fun hubInFull() = Prefs.homeInFull(this) && onScreen.firstOrNull() in homes
@@ -516,9 +516,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         // Home has come forward: a receded bar comes back in full
         // The hub: arriving home, the bar is there in full, whatever it was doing in the app
         val front = onScreen.firstOrNull()
-        if (front != lastFront) {
-            val wasHub = lastFront in homes
-            lastFront = front
+        if (front != hubFront) {
+            val wasHub = hubFront in homes
+            hubFront = front
             if (hubInFull()) {
                 if (receded) returnFromRecede(gentle = true)
                 capsules.forEach { if (it.resting) it.setResting(false) }
