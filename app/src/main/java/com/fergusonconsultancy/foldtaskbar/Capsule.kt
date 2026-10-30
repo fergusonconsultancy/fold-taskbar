@@ -84,10 +84,13 @@ class Capsule(
     fun lattice(): Lattice? {
         if (!isAttachedToWindow || width == 0 || height == 0) return null
         val loc = IntArray(2).also { getLocationOnScreen(it) }
-        val first = (0 until childCount).map { getChildAt(it) }.firstOrNull { it.visibility == VISIBLE && it.width > 0 && it !in dividers } ?: return null
+        val icons = (0 until childCount).map { getChildAt(it) }.filter { it.visibility == VISIBLE && it.width > 0 && it !in dividers }
+        val first = icons.firstOrNull() ?: return null
+        val end = icons.last()
         val anchor = if (vertical) loc[1] + first.top + first.height / 2f else loc[0] + first.left + first.width / 2f
+        val last = if (vertical) loc[1] + end.top + end.height / 2f else loc[0] + end.left + end.width / 2f
         return Lattice(android.graphics.Rect(loc[0], loc[1], loc[0] + width, loc[1] + height), anchor,
-            (context.dp(iconDp) + gap).toFloat(), context.dp(iconDp), vertical)
+            (context.dp(iconDp) + gap).toFloat(), context.dp(iconDp), vertical, last)
     }
 
     /**

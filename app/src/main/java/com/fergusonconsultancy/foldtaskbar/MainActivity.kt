@@ -29,6 +29,17 @@ class MainActivity : Activity() {
     private lateinit var iconsRow: Row
     private lateinit var presenceDetail: TextView
     private lateinit var recedeOptions: LinearLayout
+    private lateinit var hideOptions: LinearLayout
+
+    /** A slider of whole numbers with the line explaining it, as one row of a card. */
+    private fun tuned(label: String, min: Int, max: Int, value: Int, designed: Int, save: (android.content.Context, Int) -> Unit,
+                      note: String, format: (Int) -> String) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(Slider(this@MainActivity, label, min.toFloat(), max.toFloat(), value.toFloat(), designed.toFloat(), { format(kotlin.math.round(it).toInt()) }) {
+            save(this@MainActivity, kotlin.math.round(it).toInt())
+        })
+        addView(text(note, 13f, Kit.MUTED).apply { setPadding(px(18), 0, px(18), px(14)) })
+    }
     private lateinit var logText: TextView
     private lateinit var versionText: TextView
 
@@ -57,7 +68,7 @@ class MainActivity : Activity() {
         screen.section("Presence")
         // The hub (30 Oct 2026): home always has the bar in full; the presence is for apps
         screen.add(Card(this).apply {
-            row(Row(this@MainActivity, "Always in full on the home screen", "Home is the hub: the bar is always there, whatever it does in apps or whether auto-hide is on",
+            row(Row(this@MainActivity, "Always in full on the home screen", "Home is the hub: the bar is always there in full. What you choose below is for inside apps",
                 Toggle(this@MainActivity, Prefs.homeInFull(this@MainActivity)) { Prefs.setHomeInFull(this@MainActivity, it) }))
         }, px(0))
         screen.add(text("In apps", 14f, Kit.MUTED, 450).apply { setPadding(px(4), px(18), 0, px(8)) })
@@ -79,6 +90,21 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(12) })
         }
         screen.add(recedeOptions)
+        // Hide's own settings: what was Auto-hide and its tuning, together (30 Oct 2026)
+        hideOptions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(Card(this@MainActivity).apply {
+                row(tuned("Holding time", 0, Tuning.HOLDS.size - 1, Tuning.hold(this@MainActivity), Tuning.HOLD_DEFAULT, Tuning::setHold,
+                    "How long the bar stays once called. Infinite keeps it until you touch anywhere outside it.") { Tuning.holdLabel(it) })
+                row(tuned("Reaction delay", 0, 300, Tuning.delay(this@MainActivity), Tuning.DELAY_DEFAULT, Tuning::setDelay,
+                    "How long the bar waits before appearing once you swipe where it sits. A little delay forgives a swipe meant for the app.") { "$it ms" })
+                row(tuned("Call sensitivity", 1, 6, Tuning.sensitivity(this@MainActivity), Tuning.SENSITIVITY_DEFAULT, Tuning::setSensitivity,
+                    "How far a swipe must travel to call the bar. Low leaves the gesture to the app; high calls the bar at the lightest touch.") {
+                    when (it) { 1 -> "1  ·  favours the app"; 6 -> "6  ·  favours the bar"; else -> "$it" }
+                })
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(18) })
+        }
+        screen.add(hideOptions)
         paintPresence()
 
         // ---- Look
@@ -118,7 +144,7 @@ class MainActivity : Activity() {
         // ---- Calling it back (29 Oct 2026)
         screen.section("Calling the bar back")
         screen.add(Card(this).apply {
-            row(Row(this@MainActivity, "Quick Settings tile", "Lit when the bar is running. Tap it and the bar comes back from its tab, from auto-hide or from receding; dim, it takes you to switch the bar back on", endValue("Add  ›", Kit.CHAMPAGNE)) {
+            row(Row(this@MainActivity, "Quick Settings tile", "Lit when the bar is running. Tap it and the bar comes back from its tab, from Hide or from receding; dim, it takes you to switch the bar back on", endValue("Add  ›", Kit.CHAMPAGNE)) {
                 addTile()
             })
             row(Row(this@MainActivity, "Accessibility button", "Assign Android's accessibility button or gesture to Fold Taskbar and it calls the bar back from anywhere", endValue("Set up  ›", Kit.CHAMPAGNE)) {
@@ -133,11 +159,9 @@ class MainActivity : Activity() {
                 Toggle(this@MainActivity, Prefs.membrane(this@MainActivity)) { Prefs.setMembrane(this@MainActivity, it) }))
             row(Row(this@MainActivity, "Concentrato", "The faster you drag or fling, the more everything else falls away",
                 Toggle(this@MainActivity, Prefs.concentrato(this@MainActivity)) { Prefs.setConcentrato(this@MainActivity, it) }))
-            row(Row(this@MainActivity, "Auto-hide", "Swipe up where the bar sits to call it back",
-                Toggle(this@MainActivity, Prefs.autoHide(this@MainActivity)) { Prefs.setAutoHide(this@MainActivity, it) }))
             row(Row(this@MainActivity, "One UI split screen", "Dragging an app hands it to One UI's own drop zones",
                 Toggle(this@MainActivity, Prefs.systemDrag(this@MainActivity)) { Prefs.setSystemDrag(this@MainActivity, it) }))
-            row(Row(this@MainActivity, "Advanced tuning", "How the bar shows and hides, the spring it settles on, how readily it answers a swipe and how long it stays", endValue("Open  ›", Kit.CHAMPAGNE)) {
+            row(Row(this@MainActivity, "Advanced tuning", "The bar's show and hide animation, and the spring it settles on", endValue("Open  ›", Kit.CHAMPAGNE)) {
                 startActivity(Intent(this@MainActivity, TuningActivity::class.java))
             })
             row(Row(this@MainActivity, "Put the bar back at the bottom", null, endValue("Reset", Kit.CHAMPAGNE)) {
@@ -178,6 +202,7 @@ class MainActivity : Activity() {
     private fun paintPresence() {
         presenceDetail.text = when (Prefs.presence(this)) {
             Presence.ALWAYS -> "In apps too, the bar is always there in full. It still steps aside for the keyboard."
+            Presence.HIDE -> "In apps, the bar is out of sight until you call it: swipe up or tap where it sits, or use the Quick Settings tile. It stays for the holding time, then leaves again."
             Presence.TRIM -> "In apps, the bar rests as a fine line of trim. Touch it and the icons rise around your finger; slide along it and they swell as you pass; lift on one to open it."
             Presence.RECEDE -> {
                 val after = Prefs.recedeAfter(this)
@@ -187,6 +212,7 @@ class MainActivity : Activity() {
             }
         }
         recedeOptions.visibility = if (Prefs.presence(this) == Presence.RECEDE) View.VISIBLE else View.GONE
+        hideOptions.visibility = if (Prefs.presence(this) == Presence.HIDE) View.VISIBLE else View.GONE
     }
 
     private fun refresh() {
@@ -387,7 +413,7 @@ class MainActivity : Activity() {
             "One landing" to "Every switch drawn by the bar lands on one deceleration and stops exactly on the app's own window, pixel for pixel, so the hand-over to the live app is a cut you cannot see. Nothing overshoots and comes back. What you leave recedes into the bar's dark ground as the new app comes forward.",
             "Fuoco and Onda" to "The depth switches. The screen you are leaving falls out of focus behind the arriving app. Fuoco is a focus pull: the app rises soft from the icon and sharpens as it fills the screen. Onda opens as a circle from the icon, its rim a fine meniscus. Cycle within 700ms of the last switch and Concentrato makes each one quicker and shallower.",
             "Carosello" to "One UI's card carousel, redrawn to the mandate. The screen you leave lifts off as a card and slides aside; the new app follows in as a card, its icon first on the bar's dark glass and then its picture, and opens out to land exactly on its own window. One UI settles its cards on a spring; Carosello moves all three stages on one deceleration, overlapping so the eye reads one gesture, and nothing moves once it lands.",
-            "Advanced tuning" to "One UI's floating taskbar lets you tune how it shows and hides. So does this bar: its starting length and height, the duration, and the spring's stiffness and damping, with a reaction delay, call sensitivity and holding time for auto-hide. Out of the box the spring is critically damped, so the bar arrives without a bounce; tune it lower and it will bounce, by your choice, not ours.",
+            "Advanced tuning" to "One UI's floating taskbar lets you tune how it shows and hides. So does this bar: its starting length and height, the duration, and the spring's stiffness and damping, with a reaction delay, call sensitivity and holding time for the Hide presence. Out of the box the spring is critically damped, so the bar arrives without a bounce; tune it lower and it will bounce, by your choice, not ours.",
             "Lama" to "The Alfa light line as a switch, and the bar's signature. Two points of light race out of the icon along the bar, drawing a fine champagne blade, and the slit opens hard behind them, uncovering the app in place. Each lip carries a thin line of light onto the app and a faint shadow onto the cover. The blade always runs along the bar, wherever it sits.",
             "No colour blocks" to "Until the bar has a picture of an app, its motion is carried by light over the bar's own dark glass, never a block of the app's colour. Pictures are kept privately in the app's own storage, so they survive a restart; secure screens such as banking apps are never kept.",
             "Reveal and Grow" to "Drawn by the bar, because One UI ignores Android's classic launch animations and plays its own task switch. Reveal: nothing scales; a window widens from the icon and uncovers the app in place. Grow: the whole app at its true proportions scales up out of the icon.",
