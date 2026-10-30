@@ -110,7 +110,12 @@ fun lightOver(lum: Float, was: Boolean?): Boolean = when {
 }
 
 /** How the bar rests (Bellezza Necessaria, principle 3). */
-enum class Presence(val label: String) { ALWAYS("Always"), TRIM("Trim"), RECEDE("Recede") }
+/**
+ * How the bar behaves inside apps, every way of stepping aside in one choice (30 Oct 2026),
+ * alphabetical. Hide was the separate Auto-hide switch; on the home screen the hub rule keeps
+ * the bar in full whichever is chosen.
+ */
+enum class Presence(val label: String) { ALWAYS("Always"), HIDE("Hide"), RECEDE("Recede"), TRIM("Trim") }
 
 /**
  * The bar's profile (25 Oct 2026). Round: the capsule, ends fully rounded. Slim: a lower, flatter
@@ -232,7 +237,12 @@ object Prefs {
      * a fine line of trim; touch it and the icons materialise around your finger, nearest first.
      */
     /** How the bar behaves inside apps. Recede by default since 30 Oct 2026: it steps back while you read and returns on its own. */
-    fun presence(c: Context) = runCatching { Presence.valueOf(of(c).getString("presence", null)!!) }.getOrDefault(Presence.RECEDE)
+    fun presence(c: Context): Presence {
+        val p = of(c)
+        // The old Auto-hide switch becomes the Hide presence, once
+        if (p.getBoolean(AUTO_HIDE, false)) { p.edit().remove(AUTO_HIDE).putString("presence", Presence.HIDE.name).apply(); return Presence.HIDE }
+        return runCatching { Presence.valueOf(p.getString("presence", null)!!) }.getOrDefault(Presence.RECEDE)
+    }
 
     /**
      * The home screen is the hub (30 Oct 2026): on it the bar is always there in full, whatever
@@ -264,8 +274,9 @@ object Prefs {
     fun concentrato(c: Context) = of(c).getBoolean("concentrato", true)
     fun setConcentrato(c: Context, v: Boolean) = of(c).edit().putBoolean("concentrato", v).apply()
 
-    fun autoHide(c: Context) = of(c).getBoolean(AUTO_HIDE, false)
-    fun setAutoHide(c: Context, v: Boolean) = of(c).edit().putBoolean(AUTO_HIDE, v).apply()
+    /** Auto-hide is now the Hide presence. Switched off from the bar's menu, the bar recedes instead. */
+    fun autoHide(c: Context) = presence(c) == Presence.HIDE
+    fun setAutoHide(c: Context, v: Boolean) = setPresence(c, if (v) Presence.HIDE else Presence.RECEDE)
 
     fun recentCount(c: Context) = of(c).getInt(RECENT_COUNT, 4)
     fun setRecentCount(c: Context, v: Int) = of(c).edit().putInt(RECENT_COUNT, v).apply()

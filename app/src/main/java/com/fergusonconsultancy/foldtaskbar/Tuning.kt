@@ -89,6 +89,11 @@ object Tuning {
             .putInt(STIFFNESS, v[3]).putInt(DAMPING, v[4]).apply()
     }
 
+    /** The show and hide animation back as designed, leaving Hide's own settings alone. */
+    fun resetAnimation(c: Context) {
+        p(c).edit().remove(H_SCALE).remove(V_SCALE).remove(DURATION).remove(STIFFNESS).remove(DAMPING).apply()
+    }
+
     /** Everything back as designed. */
     fun reset(c: Context) {
         p(c).edit().remove(H_SCALE).remove(V_SCALE).remove(DURATION).remove(STIFFNESS).remove(DAMPING)

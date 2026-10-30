@@ -75,18 +75,8 @@ class TuningActivity : Activity() {
             }, "How much the spring bounces. 6 is critical damping, the designed value: the bar arrives on one deceleration and never overshoots. Below 6 it bounces, which the doctrine argues against; above, it eases in more slowly still."))
         })
 
-        // ---- Other options
-        screen.section("Other options")
-        screen.add(Card(this).apply {
-            row(withNote(whole("Reaction delay", 0, 300, Tuning.delay(this@TuningActivity), Tuning.DELAY_DEFAULT, Tuning::setDelay, replays = false) { "$it ms" },
-                "With auto-hide on, how long the bar waits before appearing once you swipe where it sits. A little delay forgives a swipe meant for the app."))
-            row(withNote(whole("Call sensitivity", 1, 6, Tuning.sensitivity(this@TuningActivity), Tuning.SENSITIVITY_DEFAULT, Tuning::setSensitivity, replays = false) {
-                when (it) { 1 -> "1  ·  favours the app"; 6 -> "6  ·  favours the bar"; else -> "$it" }
-            }, "How far a swipe must travel before it calls the bar. Low gives the gesture to the app beneath; high calls the bar at the lightest touch."))
-            row(withNote(whole("Holding time", 0, Tuning.HOLDS.size - 1, Tuning.hold(this@TuningActivity), Tuning.HOLD_DEFAULT, Tuning::setHold, replays = false) { Tuning.holdLabel(it) },
-                "How long the bar stays once called before auto-hide takes it away. Infinite keeps it until you touch anywhere outside it."))
-        })
-        screen.add(primary("Reset to the designed values", filled = false) { Tuning.reset(this); recreate() }, px(18))
+        screen.add(primary("Reset the animation", filled = false) { Tuning.resetAnimation(this); recreate() }, px(18))
+        screen.add(note("Holding time, reaction delay and call sensitivity live with the Hide presence, on the main settings."), px(10))
 
         setContentView(screen.root)
         preview.post { replay(hideFirst = false) }

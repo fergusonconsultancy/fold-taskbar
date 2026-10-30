@@ -72,7 +72,20 @@ interface GridDrag {
  * The bar's lattice: its capsule on screen, the centre of its first icon along its length,
  * the distance from one icon to the next, the icon size, and whether it stands upright.
  */
-data class Lattice(val bar: android.graphics.Rect, val anchor: Float, val pitch: Float, val iconPx: Int, val vertical: Boolean)
+data class Lattice(val bar: android.graphics.Rect, val anchor: Float, val pitch: Float, val iconPx: Int, val vertical: Boolean, val last: Float = Float.NaN) {
+    /**
+     * The grid's columns under a lying bar (30 Oct 2026): spaced evenly from the bar's first
+     * icon (the grid button) to its last, each at least [minCell] wide. The grid's outer columns
+     * stand exactly under the bar's ends, and there is no empty margin beside the first column.
+     * Returns the count, the first centre and the spacing, or null if the bar is too short.
+     */
+    fun columns(minCell: Float): Triple<Int, Float, Float>? {
+        if (vertical || last.isNaN() || last - anchor < minCell * 2) return null
+        val span = last - anchor
+        val n = (kotlin.math.floor(span / minCell).toInt() + 1).coerceIn(3, 6)
+        return Triple(n, anchor, span / (n - 1))
+    }
+}
 
 object Curves {
     val OPEN = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
@@ -195,7 +208,12 @@ class AppDrawer(
         var padStart = pad; var padEnd = pad; var padTop = 0
         var rowH = iconPx + context.dp(40)
         var cellW: Float
-        if (lat != null && !lat.vertical) {
+        val even = lat?.columns(context.dp(84).toFloat())
+        if (lat != null && even != null) {
+            columns = even.first; cellW = even.third
+            padStart = (even.second - cellW / 2f - rect.left).toInt().coerceAtLeast(0)
+            padEnd = (widthPx - padStart - columns * cellW).toInt().coerceAtLeast(0)
+        } else if (lat != null && !lat.vertical) {
             val stride = kotlin.math.ceil(context.dp(72) / lat.pitch).toInt().coerceAtLeast(1)
             cellW = stride * lat.pitch
             val k0 = kotlin.math.ceil((rect.left + cellW / 2f - lat.anchor) / lat.pitch)

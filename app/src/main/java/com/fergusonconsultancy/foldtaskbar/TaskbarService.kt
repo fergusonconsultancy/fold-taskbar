@@ -80,6 +80,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     @Volatile private var onScreenBounds: Map<String, Rect> = emptyMap()
     @Volatile private var keyboardTop: Int? = null
     @Volatile private var systemInFront = false
+    @Volatile private var systemTitle: String? = null
     private var hidePackages: Set<String> = emptySet()
     /** The home apps (launchers). The bar belongs here more than anywhere. */
     @Volatile private var homes: Set<String> = emptySet()
@@ -194,7 +195,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     private fun hideReason(): String = when {
         !isMainScreen() -> "not on the main screen"
         locked() -> "phone locked"
-        systemInFront -> "a system panel is in front"
+        systemInFront -> "a system panel is in front (${systemTitle ?: "untitled"})"
         onScreen.isEmpty() -> "no app seen on screen yet"
         else -> "front app ${onScreen.first()} is excluded"
     }
@@ -257,7 +258,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         override fun onDisplayRemoved(displayId: Int) = Unit
         override fun onDisplayChanged(displayId: Int) {
             if (::wm.isInitialized && !isMainScreen()) vanish()
-            scheduleScan()
+            settleScans()
         }
     }
 
@@ -355,6 +356,22 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         runCatching { apply() }.onFailure { EventLog.add(this, "Recovered from ${it.javaClass.simpleName} while laying out the bar: ${it.message?.take(100)}") }
     }
 
+    /**
+     * The bar must be there on the main screen. Unlocking, unfolding and the screen waking each
+     * pass through moments when the screen cannot yet be read (the lock screen leaving, the
+     * display still reporting the cover screen's size). The bar used to read the screen once at
+     * that moment, find it unready and stay hidden until some later event. Now it reads again
+     * as the moment settles, and keeps looking for as long as it is hidden on the unfolded,
+     * unlocked main screen (30 Oct 2026).
+     */
+    private fun settleScans() {
+        scheduleScan()
+        for (d in longArrayOf(160, 420, 900, 1600, 2600)) bg.postDelayed({ main.post { scheduleScan() } }, d)
+    }
+
+    private val watch = Runnable { scheduleScan() }
+    private fun watchSoon() { main.removeCallbacks(watch); main.postDelayed(watch, WATCH_MS) }
+
     private fun scheduleScan() {
         bg.removeCallbacks(scan)
         bg.postDelayed(scan, 40)
@@ -373,7 +390,15 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         for (w in list) {
             when (w.type) {
                 AccessibilityWindowInfo.TYPE_INPUT_METHOD -> { w.getBoundsInScreen(r); imeTop = r.top }
-                AccessibilityWindowInfo.TYPE_SYSTEM -> if (w.isFocused) system = true
+                // 30 Oct 2026, the log showed the bar hidden for "a system panel" on the home
+                // screen and after unlocking or unfolding. Any focused system window counted,
+                // including small ones One UI focuses in passing. Now only a panel that covers a
+                // real part of the screen (the shade, Quick Settings, the power menu) puts the bar aside.
+                AccessibilityWindowInfo.TYPE_SYSTEM -> if (w.isFocused) {
+                    w.getBoundsInScreen(r)
+                    val screenArea = (liveBounds().width().toLong() * liveBounds().height()).coerceAtLeast(1)
+                    if (r.width().toLong() * r.height() * 4 >= screenArea) { system = true; systemTitle = w.title?.toString() }
+                }
                 AccessibilityWindowInfo.TYPE_APPLICATION -> {
                     // Some windows, launchers among them, will not give up their contents. For the
                     // focused one, ask the active window instead; failing that, it is counted
@@ -432,7 +457,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             vanish()
         } else if (!closing && folding) {
             folding = false
-            scheduleScan()
+            settleScans()
         }
     }
 
@@ -478,8 +503,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         override fun onReceive(c: android.content.Context?, i: Intent?) {
             when (i?.action) {
                 Intent.ACTION_SCREEN_OFF -> if (::wm.isInitialized) vanish()
-                Intent.ACTION_SCREEN_ON -> if (::wm.isInitialized && locked()) vanish()
-                Intent.ACTION_USER_PRESENT -> scheduleScan()
+                Intent.ACTION_SCREEN_ON -> { if (::wm.isInitialized && locked()) vanish(); settleScans() }
+                Intent.ACTION_USER_PRESENT -> settleScans()
             }
         }
     }
@@ -500,8 +525,15 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         reportOpenTime()
         sampleSoon()
 
-        if (!isMainScreen() || locked()) { vanish(); return }
+        if (!isMainScreen() || locked()) {
+            vanish()
+            // Still on and unfolded: the lock screen or the unfold is on its way out. Look again
+            // shortly rather than wait for an event that may never come
+            if (!folding && getSystemService(android.os.PowerManager::class.java).isInteractive) watchSoon()
+            return
+        }
         if (!shouldShow()) {
+            watchSoon()
             // Anything other than folding waits a moment to be sure.
             val delay = 220L
             main.removeCallbacks(hideNow); main.postDelayed(hideNow, delay)
@@ -512,6 +544,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             return
         }
         main.removeCallbacks(hideNow)
+        main.removeCallbacks(watch)
         if (lastHideWhy != null) { EventLog.add(this, "Bar shown over ${onScreen.firstOrNull()}"); lastHideWhy = null }
         // Home has come forward: a receded bar comes back in full
         // The hub: arriving home, the bar is there in full, whatever it was doing in the app
@@ -2365,6 +2398,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             AppDrawer.Side.BOTTOM, AppDrawer.Side.TOP -> {
                 val minW = dp(460); val maxW = s.width() - 2 * margin
                 var l = lat.bar.left; var r = lat.bar.right
+                // Wide enough that the grid's outer columns stand under the bar's first and last icons
+                lat.columns(dp(84).toFloat())?.let { (_, first, spacing) ->
+                    l = minOf(l, (first - spacing / 2f).toInt()); r = maxOf(r, (lat.last + spacing / 2f).toInt())
+                }
                 if (r - l < minW) { val c = (l + r) / 2; l = c - minW / 2; r = c + minW / 2 }
                 if (r - l > maxW) { l = margin; r = s.width() - margin }
                 if (l < margin) { r += margin - l; l = margin }
@@ -2406,6 +2443,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         const val SETTLE_MS = 320L
         /** How long after the last scroll a receded bar waits before returning. */
         const val RECEDE_HOLD_MS = 700L
+        /** While the bar is hidden on the unfolded, unlocked main screen, how often it looks again. */
+        const val WATCH_MS = 350L
         /** However Recede is set, a newly arrived app's own opening scrolls never send the bar back. */
         const val RECEDE_SETTLE_MS = 1500L
         /** The bar's entrance after an unfold: long and gentle. */
