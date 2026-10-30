@@ -193,6 +193,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     /** Why the bar is not showing, in plain words, for the log. */
     private fun hideReason(): String = when {
+        folding && displayIsMain() -> "the hinge reads folded (${if (hingeAngle.isNaN()) "no reading" else "${hingeAngle.toInt()}°"})"
         !isMainScreen() -> "not on the main screen"
         locked() -> "phone locked"
         systemInFront -> "a system panel is in front (${systemTitle ?: "untitled"})"
@@ -397,7 +398,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 AccessibilityWindowInfo.TYPE_SYSTEM -> if (w.isFocused) {
                     w.getBoundsInScreen(r)
                     val screenArea = (liveBounds().width().toLong() * liveBounds().height()).coerceAtLeast(1)
-                    if (r.width().toLong() * r.height() * 4 >= screenArea) { system = true; systemTitle = w.title?.toString() }
+                    // ...and only one actually showing something. One UI can leave the lock
+                    // screen's full-screen window focused but empty after unlocking
+                    val showing = runCatching { w.root?.let { it.isVisibleToUser && it.childCount > 0 } }.getOrNull() ?: false
+                    if (showing && r.width().toLong() * r.height() * 4 >= screenArea) { system = true; systemTitle = w.title?.toString() }
                 }
                 AccessibilityWindowInfo.TYPE_APPLICATION -> {
                     // Some windows, launchers among them, will not give up their contents. For the
@@ -451,6 +455,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
      */
     override fun onSensorChanged(event: android.hardware.SensorEvent) {
         val angle = event.values.firstOrNull() ?: return
+        hingeAngle = angle
         val closing = angle < 150f
         if (closing && !folding) {
             folding = true
@@ -462,6 +467,35 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
     }
 
     override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) = Unit
+
+    /**
+     * 30 Oct 2026: the bar could stay away on the open main screen until the phone was folded
+     * and opened again. The hinge sensor only reports changes, and an opening made while the
+     * phone was asleep could go unreported, leaving the bar believing the phone still folded.
+     * Listening afresh makes the sensor report where the hinge is now. Done on every wake and
+     * unlock, and whenever the bar thinks it is folded while the display says the main screen is on.
+     */
+    private var hingeAngle = Float.NaN
+    private var hingeAskedAt = 0L
+    private fun refreshHinge() {
+        val now = SystemClock.uptimeMillis()
+        if (now - hingeAskedAt < 800) return
+        hingeAskedAt = now
+        runCatching {
+            val sm = getSystemService(android.hardware.SensorManager::class.java) ?: return
+            val hinge = sm.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE) ?: return
+            sm.unregisterListener(this, hinge)
+            sm.registerListener(this, hinge, android.hardware.SensorManager.SENSOR_DELAY_UI, main)
+        }
+    }
+
+    /** The display itself is the main screen, whatever the hinge flag says. */
+    private fun displayIsMain(): Boolean {
+        val d = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+        val m = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION") d?.getRealMetrics(m)
+        return m.widthPixels > 0 && minOf(m.widthPixels, m.heightPixels) / m.density >= 600
+    }
 
     /** Gone this frame: no fade, no panels, no tab left behind on either screen. */
     private fun vanish() {
@@ -503,8 +537,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         override fun onReceive(c: android.content.Context?, i: Intent?) {
             when (i?.action) {
                 Intent.ACTION_SCREEN_OFF -> if (::wm.isInitialized) vanish()
-                Intent.ACTION_SCREEN_ON -> { if (::wm.isInitialized && locked()) vanish(); settleScans() }
-                Intent.ACTION_USER_PRESENT -> settleScans()
+                Intent.ACTION_SCREEN_ON -> { if (::wm.isInitialized && locked()) vanish(); refreshHinge(); settleScans() }
+                Intent.ACTION_USER_PRESENT -> { refreshHinge(); settleScans() }
             }
         }
     }
@@ -529,7 +563,14 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
             vanish()
             // Still on and unfolded: the lock screen or the unfold is on its way out. Look again
             // shortly rather than wait for an event that may never come
-            if (!folding && getSystemService(android.os.PowerManager::class.java).isInteractive) watchSoon()
+            val awake = getSystemService(android.os.PowerManager::class.java).isInteractive
+            if (awake && folding && displayIsMain()) {
+                // Folded by the hinge's last word, open by the display's: ask the hinge again
+                val why = hideReason()
+                if (why != lastHideWhy) { lastHideWhy = why; EventLog.add(this, "Bar hidden: $why") }
+                refreshHinge()
+            }
+            if (awake) watchSoon()
             return
         }
         if (!shouldShow()) {
