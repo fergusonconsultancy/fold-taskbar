@@ -8,17 +8,20 @@ import android.content.SharedPreferences
  * reserved for the system (Depth asked for it, and One UI refused).
  */
 enum class Motion(val label: String) {
-    // Drawn by the bar itself (see Pour.kt), in the order offered
+    // Drawn by the bar itself (see Pour.kt). Offered in alphabetical order (30 Oct 2026), as in
+    // Fold Motion, with Android's own last
+    CAROSELLO("Carosello: the screen you leave lifts off as a card and slides aside, the new app follows in as a card, its icon then its picture, and opens out onto the screen. One UI's carousel, on a single deceleration with no spring (drawn by the bar)"),
     FUOCO("Fuoco: the app behind falls out of focus while the new one rises from its icon, soft, and sharpens as it fills the screen (drawn by the bar)"),
-    ONDA("Onda: the app wells up from its icon in a widening circle as the app behind falls out of focus (drawn by the bar)"),
-    LAMA("Lama: two points of light race out of the icon drawing a blade along the bar, and the app is uncovered from it, light falling from each lip onto the app (drawn by the bar)"),
-    REVEAL("Reveal: nothing moves but the opening. The app is already in place and a window widens from the icon to uncover it (drawn by the bar)"),
     GROW("Grow: the whole app, at its true proportions, scales up out of the icon (drawn by the bar)"),
+    LAMA("Lama: two points of light race out of the icon drawing a blade along the bar, and the app is uncovered from it, light falling from each lip onto the app (drawn by the bar)"),
+    ONDA("Onda: the app wells up from its icon in a widening circle as the app behind falls out of focus (drawn by the bar)"),
+    REVEAL("Reveal: nothing moves but the opening. The app is already in place and a window widens from the icon to uncover it (drawn by the bar)"),
     SYSTEM("System animation"),
     ;
 
     /** The motions the bar draws itself, and how. */
     val look: Look? get() = when (this) {
+        CAROSELLO -> Look.CAROSELLO
         FUOCO -> Look.FUOCO
         ONDA -> Look.ONDA; LAMA -> Look.LAMA
         REVEAL -> Look.REVEAL; GROW -> Look.GROW; SYSTEM -> null

@@ -118,6 +118,9 @@ class MainActivity : Activity() {
                 Toggle(this@MainActivity, Prefs.autoHide(this@MainActivity)) { Prefs.setAutoHide(this@MainActivity, it) }))
             row(Row(this@MainActivity, "One UI split screen", "Dragging an app hands it to One UI's own drop zones",
                 Toggle(this@MainActivity, Prefs.systemDrag(this@MainActivity)) { Prefs.setSystemDrag(this@MainActivity, it) }))
+            row(Row(this@MainActivity, "Advanced tuning", "How the bar shows and hides, the spring it settles on, how readily it answers a swipe and how long it stays", endValue("Open  ›", Kit.CHAMPAGNE)) {
+                startActivity(Intent(this@MainActivity, TuningActivity::class.java))
+            })
             row(Row(this@MainActivity, "Put the bar back at the bottom", null, endValue("Reset", Kit.CHAMPAGNE)) {
                 Prefs.resetSpots(this@MainActivity); refresh()
             })
@@ -304,6 +307,14 @@ class MainActivity : Activity() {
         c.drawRoundRect(icon, 6f, 6f, p)
         when (m) {
             Motion.SYSTEM -> Unit
+            Motion.CAROSELLO -> {
+                // Two cards in a row: the one you leave dimmed at the left, the new one arriving
+                val cw = r.width() * 0.34f; val chh = r.height() * 0.66f; val top = r.centerY() - chh / 2f
+                p.color = Color.rgb(54, 66, 60); c.drawRoundRect(RectF(r.left + r.width() * 0.06f, top, r.left + r.width() * 0.06f + cw, top + chh), 8f, 8f, p)
+                val nx = r.left + r.width() * 0.06f + cw + r.width() * 0.05f
+                p.color = Color.rgb(98, 116, 106); c.drawRoundRect(RectF(nx, top, nx + cw, top + chh), 8f, 8f, p)
+                p.color = Kit.CHAMPAGNE; c.drawCircle(nx + cw / 2f, r.centerY(), chh * 0.12f, p)
+            }
             Motion.FUOCO -> {
                 // The app behind out of focus, the new one rising sharp from the icon
                 p.color = Color.argb(140, 120, 132, 126)
@@ -350,6 +361,8 @@ class MainActivity : Activity() {
             "The entrance" to "After an unfold the bar does not simply appear. Once the screen is whole (Fold Motion tells the bar when its reveal has ended) the bar rises a little way from the edge it rests against on a long, soft ease, and its icons settle in from the middle outwards. No bounce: an invitation.",
             "One landing" to "Every switch drawn by the bar lands on one deceleration and stops exactly on the app's own window, pixel for pixel, so the hand-over to the live app is a cut you cannot see. Nothing overshoots and comes back. What you leave recedes into the bar's dark ground as the new app comes forward.",
             "Fuoco and Onda" to "The depth switches. The screen you are leaving falls out of focus behind the arriving app. Fuoco is a focus pull: the app rises soft from the icon and sharpens as it fills the screen. Onda opens as a circle from the icon, its rim a fine meniscus. Cycle within 700ms of the last switch and Concentrato makes each one quicker and shallower.",
+            "Carosello" to "One UI's card carousel, redrawn to the mandate. The screen you leave lifts off as a card and slides aside; the new app follows in as a card, its icon first on the bar's dark glass and then its picture, and opens out to land exactly on its own window. One UI settles its cards on a spring; Carosello moves all three stages on one deceleration, overlapping so the eye reads one gesture, and nothing moves once it lands.",
+            "Advanced tuning" to "One UI's floating taskbar lets you tune how it shows and hides. So does this bar: its starting length and height, the duration, and the spring's stiffness and damping, with a reaction delay, call sensitivity and holding time for auto-hide. Out of the box the spring is critically damped, so the bar arrives without a bounce; tune it lower and it will bounce, by your choice, not ours.",
             "Lama" to "The Alfa light line as a switch, and the bar's signature. Two points of light race out of the icon along the bar, drawing a fine champagne blade, and the slit opens hard behind them, uncovering the app in place. Each lip carries a thin line of light onto the app and a faint shadow onto the cover. The blade always runs along the bar, wherever it sits.",
             "No colour blocks" to "Until the bar has a picture of an app, its motion is carried by light over the bar's own dark glass, never a block of the app's colour. Pictures are kept privately in the app's own storage, so they survive a restart; secure screens such as banking apps are never kept.",
             "Reveal and Grow" to "Drawn by the bar, because One UI ignores Android's classic launch animations and plays its own task switch. Reveal: nothing scales; a window widens from the icon and uncovers the app in place. Grow: the whole app at its true proportions scales up out of the icon.",

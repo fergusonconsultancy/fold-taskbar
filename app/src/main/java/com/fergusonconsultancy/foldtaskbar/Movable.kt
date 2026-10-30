@@ -14,6 +14,8 @@ import kotlin.math.hypot
 
 interface DragListener {
     fun onTouched()
+    /** A touch landed somewhere other than the bar. */
+    fun onOutside() {}
     /** Whether this screen point is on the bar's handle (the grid button). */
     fun isHandle(host: BarHost, x: Float, y: Float): Boolean
     /** The app under this screen point in [host], if any. */
@@ -71,6 +73,8 @@ class BarHost(context: Context, private val listener: DragListener) : FrameLayou
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Never handed to the icons: an outside touch carries no position worth acting on
+        if (ev.actionMasked == MotionEvent.ACTION_OUTSIDE) { listener.onOutside(); return true }
         if (ev.actionMasked == MotionEvent.ACTION_DOWN && listener.isResting(this)) {
             waking = true; slid = false
             downX = ev.rawX; downY = ev.rawY
