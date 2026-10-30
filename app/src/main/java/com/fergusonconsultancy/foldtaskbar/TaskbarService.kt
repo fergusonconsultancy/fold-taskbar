@@ -394,7 +394,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         main.removeCallbacks(hideNow)
         barOn = false
         arriving = true
-        hosts.forEach { it.animate().cancel(); it.tag = null; it.visibility = View.GONE; it.alpha = 1f }
+        hosts.forEach { Tuning.cancel(it); it.animate().cancel(); it.tag = null; it.visibility = View.GONE; it.alpha = 1f; it.scaleX = 1f; it.scaleY = 1f }
         closeMenu()
         if (::drawer.isInitialized) drawer.close(animated = false)
         if (::pour.isInitialized) pour.cancel()
@@ -521,6 +521,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         // From the edge it rests against: up from the bottom, down from the top, in from a side
         val (dx, dy) = if (spot.vertical) (if (spot.fx < 0.5f) -rise else rise) to 0f
             else 0f to (if (spot.fy < 0.4f) -rise else rise)
+        Tuning.cancel(host)
         host.alpha = 0f
         host.translationX = dx; host.translationY = dy
         host.scaleX = 0.97f; host.scaleY = 0.97f
@@ -535,7 +536,7 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         // then make the entrance
         if (on && arriving && covered()) {
             barOn = true
-            hosts.forEach { it.animate().cancel(); it.visibility = View.GONE }
+            hosts.forEach { Tuning.cancel(it); it.animate().cancel(); it.visibility = View.GONE }
             return
         }
         entering = on && arriving
@@ -549,10 +550,17 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
         if (!on) closePanels()
     }
 
+    /** Whether the bar at [host] stands at a side, and whether it rests against the top or left edge. */
+    private fun restingEdge(host: BarHost): Pair<Boolean, Boolean> {
+        val spot = spotFor(Prefs.shape(this), hosts.indexOf(host).coerceAtLeast(0))
+        return spot.vertical to (if (spot.vertical) spot.fx < 0.5f else spot.fy < 0.4f)
+    }
+
     private fun showHost(host: BarHost, show: Boolean) {
         val shown = host.visibility == View.VISIBLE && host.tag != "leaving"
         if (show == shown) return
         host.animate().cancel()
+        Tuning.cancel(host)
         val toward = morphTarget
         if (show) {
             host.tag = null
@@ -567,7 +575,10 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 host.animate().translationX(0f).translationY(0f).scaleX(1f).scaleY(1f).alpha(1f)
                     .setDuration(Curves.OPEN_MS).setInterpolator(Curves.OPEN).start()
             } else {
-                host.animate().alpha(1f).setDuration(90).start()
+                // Advanced tuning (30 Oct 2026): from auto-hide, a recall or switching on, the bar
+                // rises out of the edge it rests against on the tuned spring
+                val (vertical, nearStart) = restingEdge(host)
+                Tuning.show(host, vertical, nearStart)
             }
         } else {
             host.tag = "leaving"
@@ -583,7 +594,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 host.animate().translationX(tx * 0.7f).translationY(ty * 0.7f).scaleX(0.3f).scaleY(0.3f).alpha(0f)
                     .setDuration(220).setInterpolator(Curves.CLOSE).withEndAction(end).start()
             } else {
-                host.animate().alpha(0f).setDuration(90).withEndAction(end).start()
+                val (vertical, nearStart) = restingEdge(host)
+                Tuning.hide(host, vertical, nearStart, end)
             }
         }
     }
@@ -607,7 +619,8 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 val i = hosts.indexOf(v)
                 if ((r - l != or_ - ol || b - t != ob - ot) && !(v as BarHost).dragging && i !in settling) place(i)
             }
-            add(host, params(Gravity.TOP or Gravity.START, 0, 0))
+            // Watches touches outside it, for the infinite holding time
+            add(host, params(Gravity.TOP or Gravity.START, 0, 0, watchOutside = true))
             host.setOnDragListener(dragEnd)
             capsules += capsule
             hosts += host
@@ -1216,7 +1229,28 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
 
     private fun scheduleAutoHide() {
         main.removeCallbacks(autoHideNow)
-        if (Prefs.autoHide(this)) main.postDelayed(autoHideNow, 3500)
+        // Advanced tuning: the holding time. Infinite keeps the bar until a touch lands outside it
+        val hold = Tuning.holdMs(this) ?: return
+        if (Prefs.autoHide(this)) main.postDelayed(autoHideNow, hold)
+    }
+
+    /** A touch landed outside the bar. With an infinite holding time, that is what hides it. */
+    override fun onOutside() {
+        if (!Prefs.autoHide(this) || !revealed || Tuning.holdMs(this) != null) return
+        if (drawer.isOpen || menuWindow != null || hosts.any { it.dragging }) return
+        revealed = false
+        apply()
+    }
+
+    // Advanced tuning: the reaction delay, held once per swipe however many moves it reports
+    private var revealQueued = false
+    private val revealQueuedNow = Runnable { revealQueued = false; if (!revealed) { tick(); reveal() } }
+    private fun revealSoon() {
+        if (revealed || revealQueued) return
+        val d = Tuning.delayMs(this)
+        if (d <= 0) { revealQueuedNow.run(); return }
+        revealQueued = true
+        main.postDelayed(revealQueuedNow, d)
     }
 
     private fun reveal() {
@@ -1246,8 +1280,9 @@ class TaskbarService : AccessibilityService(), CapsuleActions, DragListener, Gri
                 setOnTouchListener { _, e ->
                     when (e.actionMasked) {
                         MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY }
-                        MotionEvent.ACTION_MOVE -> if (abs(downY - e.rawY) + abs(downX - e.rawX) > dp(6) && !revealed) { tick(); reveal() }
-                        MotionEvent.ACTION_UP -> if (!revealed) { tick(); reveal() }
+                        // Advanced tuning: call sensitivity sets how far the swipe must travel
+                        MotionEvent.ACTION_MOVE -> if (abs(downY - e.rawY) + abs(downX - e.rawX) > dp(Tuning.callThresholdDp(this@TaskbarService))) revealSoon()
+                        MotionEvent.ACTION_UP -> revealSoon()
                     }
                     true
                 }

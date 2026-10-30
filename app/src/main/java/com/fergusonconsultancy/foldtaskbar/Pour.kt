@@ -72,7 +72,7 @@ import android.view.animation.PathInterpolator
  * uncovered from it, the slit widening into the whole screen. Nothing flies or scales: the app is
  * already in place and the light simply opens it.
  */
-enum class Look { FUOCO, ONDA, LAMA, REVEAL, GROW }
+enum class Look { CAROSELLO, FUOCO, ONDA, LAMA, REVEAL, GROW }
 
 @SuppressLint("ViewConstructor")
 class Pour(context: Context, private val wm: WindowManager) : View(context) {
@@ -201,6 +201,7 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
                 Look.LAMA -> LAMA_MS
                 Look.REVEAL -> REVEAL_MS
                 Look.GROW -> GROW_MS
+                Look.CAROSELLO -> CAROSELLO_MS
                 else -> TRAVEL_MS
             }
             duration = if (quick) (base * 0.68f).toLong() else base
@@ -287,6 +288,8 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        // Carosello draws its own ground: the screen you leave is itself the first card
+        if (look == Look.CAROSELLO) { drawCarosello(canvas); return }
         // What you are leaving, held still (see setBackdrop), then the veil it recedes behind
         drawBackdrop(canvas)
         veil(canvas)
@@ -480,6 +483,96 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         if (v <= 0.004f) return
         ground.alpha = (255 * v).toInt()
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), ground)
+    }
+
+    /**
+     * Carosello (30 Oct 2026): One UI's card carousel, redrawn to the mandate. The screen you are
+     * leaving lifts off as a card and slides aside; the new app follows in from the far side as a
+     * card of its own, first its icon on the bar's dark glass and then its picture; and it opens
+     * out to land exactly on its own window. The three movements overlap, so the eye reads one
+     * gesture on one deceleration: no spring, no overshoot, nothing settling after it lands.
+     * Concentrato: a quick second switch skips the icon stage and the hairline, leaving only
+     * the two cards.
+     */
+    private fun drawCarosello(canvas: Canvas) {
+        val now = android.os.SystemClock.uptimeMillis()
+        val w = width.toFloat(); val h = height.toFloat()
+        val back = backdrop
+        // The ground: the bar's own dark. With the picture of the screen you leave in place it
+        // is drawn at once (the card covers it exactly at first, so nothing is seen to change);
+        // with no picture it eases in over 90ms, never a snap.
+        val groundA = when {
+            back != null -> 1f
+            coverOpaque -> mix(coverFrom, 1f, smooth((now - coverAt) / 90f))
+            else -> 0f
+        }
+        if (groundA > 0.004f) { ground.alpha = (255 * groundA).toInt(); canvas.drawRect(0f, 0f, w, h, ground) }
+        if (coverOpaque && groundA < 1f) postInvalidateOnAnimation()
+
+        val a = lift.getInterpolation((t / 0.36f).coerceIn(0f, 1f))          // the card lifts off
+        val u = lift.getInterpolation(((t - 0.1f) / 0.62f).coerceIn(0f, 1f)) // the cards slide
+        val g = lift.getInterpolation(((t - 0.56f) / 0.44f).coerceIn(0f, 1f)) // the new one opens out
+        val gap = context.dp(CARD_GAP_DP).toFloat()
+        val corner = context.dp(30).toFloat()
+        val pitch = to.width() * CARD_SCALE + gap
+
+        // The card you are leaving
+        if (back != null) {
+            val s = mix(1f, CARD_SCALE, a)
+            val cw = backDst.width() * s; val ch = backDst.height() * s
+            val cx = backDst.centerX() - u * pitch; val cy = backDst.centerY()
+            r.set(cx - cw / 2f, cy - ch / 2f, cx + cw / 2f, cy + ch / 2f)
+            if (r.right > 0f) {
+                val rad = corner * a
+                path.reset(); path.addRoundRect(r, rad, rad, Path.Direction.CW)
+                canvas.save(); canvas.clipPath(path)
+                backSrc.set(0, 0, back.width, back.height)
+                backPaint.alpha = 255
+                canvas.drawBitmap(back, backSrc, r, backPaint)
+                // It dims a little as it goes, so the eye follows the one arriving
+                val d = 0.34f * u
+                if (d > 0.004f) { ground.alpha = (255 * d).toInt(); canvas.drawRect(r, ground) }
+                canvas.restore()
+            }
+        }
+
+        // The card arriving: in the carousel at first, then opening out onto its window
+        val cw = to.width() * CARD_SCALE; val ch = to.height() * CARD_SCALE
+        val ccx = to.centerX() + (1f - u) * pitch; val ccy = to.centerY()
+        tile.set(ccx - cw / 2f, ccy - ch / 2f, ccx + cw / 2f, ccy + ch / 2f)
+        r.set(mix(tile.left, to.left, g), mix(tile.top, to.top, g), mix(tile.right, to.right, g), mix(tile.bottom, to.bottom, g))
+        if (r.left >= w) return
+        val rad = corner * (1f - g)
+        path.reset(); path.addRoundRect(r, rad, rad, Path.Direction.CW)
+        canvas.save(); canvas.clipPath(path)
+        fill.color = 0xFF151B18.toInt(); fill.alpha = 255
+        canvas.drawRect(r, fill)
+        val pic = picture
+        val picA = if (pic == null) 0f else if (quick) 1f else smooth((t - 0.3f) / 0.3f)
+        val ic = icon
+        val iconA = if (pic == null) 1f else 1f - picA
+        if (ic != null && iconA > 0.01f) {
+            val size = minOf(context.dp(68).toFloat(), r.width() * 0.22f)
+            ic.setBounds((r.centerX() - size / 2f).toInt(), (r.centerY() - size / 2f).toInt(), (r.centerX() + size / 2f).toInt(), (r.centerY() + size / 2f).toInt())
+            ic.alpha = (255 * iconA).toInt()
+            ic.draw(canvas)
+            ic.alpha = 255
+        }
+        if (picA > 0.004f) {
+            paint.alpha = (255 * picA).toInt()
+            picture(canvas, r)
+            paint.alpha = 255
+        }
+        canvas.restore()
+        // One hairline of light on the arriving card's rim, gone as it lands
+        if (!quick) {
+            val rimA = 1f - g
+            if (rimA > 0.02f) {
+                sheen.strokeWidth = context.dp(1f).toFloat()
+                sheen.color = Color.argb((44 * rimA).toInt(), 255, 255, 255)
+                canvas.drawPath(path, sheen)
+            }
+        }
     }
 
     /**
@@ -846,6 +939,10 @@ class Pour(context: Context, private val wm: WindowManager) : View(context) {
         const val LAMA_MS = 380L
         const val REVEAL_MS = 360L
         const val GROW_MS = 380L
+        const val CAROSELLO_MS = 540L
+        /** Carosello: the size of a card against the screen, and the gap between cards. */
+        const val CARD_SCALE = 0.84f
+        const val CARD_GAP_DP = 18
         const val ONDA_MS = 440L
         /** Longest the picture waits for the real app before dissolving anyway. */
         const val ARRIVAL_WAIT_MS = 900L

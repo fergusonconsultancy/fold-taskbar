@@ -52,6 +52,12 @@
             </intent-filter>
         </activity>
 
+        <!-- Advanced tuning: the bar's show and hide animation, spring, and how it is called and held -->
+        <activity
+            android:name=".TuningActivity"
+            android:exported="false"
+            android:label="Advanced tuning" />
+
         <!-- Full-screen stepping stone for split screen and app pairs: Android only honours
              "open beside me" from a full-screen app -->
         <activity
