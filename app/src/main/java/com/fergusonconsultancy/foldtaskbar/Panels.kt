@@ -184,6 +184,8 @@ class AppDrawer(
         val k = "$finish|$rect|$side|$lat"
         finishNow = finish
         if (k == key && panelHost != null) return false
+        // Never rebuilt under your finger: an open grid keeps its windows until it closes
+        if (isOpen && panelHost != null) return false
         detach()
         key = k
         this.side = side
@@ -328,6 +330,8 @@ class AppDrawer(
         drainTo = null
         running?.cancel()
         setTouchable(true)
+        // Once drawn, make sure the change held
+        host.post { if (isOpen) ensureTouchable() }
 
         // Rule 5: the button answers first, in the same frame.
         from?.animateOpen(1f, Curves.OPEN_MS, Curves.OPEN)
@@ -387,7 +391,7 @@ class AppDrawer(
      */
     private fun blurTo(f: Float) {
         val host = panelHost ?: return
-        if (!blurSupported || !host.isAttachedToWindow) return
+        if (!blurSupported) return
         val lp = host.layoutParams as? WindowManager.LayoutParams ?: return
         val want = (context.dp(36) * f.coerceIn(0f, 1f)).toInt()
         if (kotlin.math.abs(lp.blurBehindRadius - want) < 2 && !(want == 0 && lp.blurBehindRadius != 0)) return
@@ -561,14 +565,28 @@ class AppDrawer(
         }
     }
 
+    /**
+     * 31 Oct 2026: opening the grid moments after its windows were rebuilt could leave it
+     * untouchable, so a scroll went to the app behind. A new window is not yet attached for a
+     * frame or two, and this used to skip it then. The window manager takes the change as soon
+     * as the window has been added, so it is applied at once, and checked again once drawn.
+     */
     private fun setTouchable(on: Boolean) {
         listOf(scrim, panelHost).forEach { v ->
-            if (v == null || !v.isAttachedToWindow) return@forEach
-            val lp = v.layoutParams as WindowManager.LayoutParams
+            if (v == null) return@forEach
+            val lp = v.layoutParams as? WindowManager.LayoutParams ?: return@forEach
             lp.flags = if (on) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             runCatching { wm.updateViewLayout(v, lp) }
         }
+    }
+
+    private fun ensureTouchable() {
+        val stuck = listOf(scrim, panelHost).any { v ->
+            val lp = v?.layoutParams as? WindowManager.LayoutParams
+            lp != null && lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE != 0
+        }
+        if (stuck) setTouchable(true)
     }
 
     private fun params(w: Int, h: Int, gravity: Int, y: Int) = WindowManager.LayoutParams(
